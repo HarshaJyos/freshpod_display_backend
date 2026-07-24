@@ -16,6 +16,7 @@
     "firebase": "^10.8.0",
     "firebase-admin": "^14.2.0",
     "helmet": "^7.1.0",
+    "jose": "^4.15.5",
     "razorpay": "^2.9.4"
   },
   "devDependencies": {
