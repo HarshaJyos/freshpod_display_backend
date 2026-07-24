@@ -23,7 +23,12 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     console.log('[FIREBASE] Admin SDK initialized using Service Account JSON.');
   } catch (err: any) {
     console.error('[FIREBASE] Error parsing Service Account JSON:', err.message);
-    initializeApp();
+    try {
+      initializeApp();
+    } catch (fallbackErr: any) {
+      console.error('[FIREBASE] Fallback ADC failed:', fallbackErr.message);
+      initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
+    }
   }
 } else {
   try {
