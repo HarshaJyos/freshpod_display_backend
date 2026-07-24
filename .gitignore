@@ -11,3 +11,4 @@ dist/
 # System/Misc
 .DS_Store
 *.log
+*-firebase-adminsdk-*.json
