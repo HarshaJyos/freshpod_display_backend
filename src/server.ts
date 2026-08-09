@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import Razorpay from 'razorpay';
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import dotenv from 'dotenv';
@@ -14,36 +14,38 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Initialize Firebase Admin SDK
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    if (serviceAccount.private_key) {
-      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+if (getApps().length === 0) {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      if (serviceAccount.private_key) {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      }
+      initializeApp({
+        credential: cert(serviceAccount)
+      });
+      console.log('[FIREBASE] Admin SDK initialized using Service Account JSON.');
+    } catch (err: any) {
+      console.error('[FIREBASE] Error parsing Service Account JSON:', err.message);
+      try {
+        initializeApp();
+      } catch (fallbackErr: any) {
+        console.error('[FIREBASE] Fallback ADC failed:', fallbackErr.message);
+        initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
+      }
     }
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
-    console.log('[FIREBASE] Admin SDK initialized using Service Account JSON.');
-  } catch (err: any) {
-    console.error('[FIREBASE] Error parsing Service Account JSON:', err.message);
+  } else {
     try {
       initializeApp();
-    } catch (fallbackErr: any) {
-      console.error('[FIREBASE] Fallback ADC failed:', fallbackErr.message);
-      initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
-    }
-  }
-} else {
-  try {
-    initializeApp();
-    console.log('[FIREBASE] Admin SDK initialized using Default Credentials.');
-  } catch (err: any) {
-    // If not initialized, fallback to project ID locally
-    try {
-      initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
-      console.log('[FIREBASE] Admin SDK initialized using Project ID fallback.');
-    } catch (fallbackErr: any) {
-      console.error('[FIREBASE] Critical: Admin SDK failed to initialize:', fallbackErr.message);
+      console.log('[FIREBASE] Admin SDK initialized using Default Credentials.');
+    } catch (err: any) {
+      // If not initialized, fallback to project ID locally
+      try {
+        initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
+        console.log('[FIREBASE] Admin SDK initialized using Project ID fallback.');
+      } catch (fallbackErr: any) {
+        console.error('[FIREBASE] Critical: Admin SDK failed to initialize:', fallbackErr.message);
+      }
     }
   }
 }
