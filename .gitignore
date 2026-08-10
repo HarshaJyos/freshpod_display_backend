@@ -22,3 +22,4 @@ move*.js
 ts_convert*.js
 test*.js
 test*.ts
+verify_and_reset_admin.ts
