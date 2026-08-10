@@ -12,3 +12,13 @@ dist/
 .DS_Store
 *.log
 *-firebase-adminsdk-*.json
+
+# Temporary/Migration/Test scripts
+src/*.js
+src/**/*.js
+migrate*.js
+update*.js
+move*.js
+ts_convert*.js
+test*.js
+test*.ts

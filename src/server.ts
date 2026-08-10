@@ -8,9 +8,27 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import dotenv from 'dotenv';
 
+// Import Mongoose DB connect and sync utilities
+import connectDB from './db/connect';
+import startSync from './init/sync';
+import SanitizationRefill from './Model/SantizationLiquid';
+import Machine from './Model/machineSchema';
+import User from './Model/userSchema';
+import mqttService from './services/mqttService';
+
+import userRoute from './routes/userRoute';
+import adminRoute from './routes/adminRoutes';
+import dealershipRoute from './routes/dealershipRoute';
+import customerRoute from './routes/customerRoutes';
+import operatorRoutes from './routes/operatorRoutes';
+
 dotenv.config();
 
 const app = express();
+
+// Initialize MQTT Connection
+mqttService.connect();
+app.set('mqttClient', mqttService.client);
 const PORT = process.env.PORT || 3000;
 
 // Initialize Firebase Admin SDK
@@ -22,26 +40,37 @@ if (getApps().length === 0) {
         serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
       }
       initializeApp({
-        credential: cert(serviceAccount)
+        credential: cert(serviceAccount),
+        databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
       });
       console.log('[FIREBASE] Admin SDK initialized using Service Account JSON.');
     } catch (err: any) {
       console.error('[FIREBASE] Error parsing Service Account JSON:', err.message);
       try {
-        initializeApp();
+        initializeApp({
+          databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
+        });
       } catch (fallbackErr: any) {
         console.error('[FIREBASE] Fallback ADC failed:', fallbackErr.message);
-        initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
+        initializeApp({ 
+          projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed',
+          databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
+        });
       }
     }
   } else {
     try {
-      initializeApp();
+      initializeApp({
+        databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
+      });
       console.log('[FIREBASE] Admin SDK initialized using Default Credentials.');
     } catch (err: any) {
       // If not initialized, fallback to project ID locally
       try {
-        initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed' });
+        initializeApp({ 
+          projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed',
+          databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
+        });
         console.log('[FIREBASE] Admin SDK initialized using Project ID fallback.');
       } catch (fallbackErr: any) {
         console.error('[FIREBASE] Critical: Admin SDK failed to initialize:', fallbackErr.message);
@@ -49,6 +78,10 @@ if (getApps().length === 0) {
     }
   }
 }
+
+// Connect to MongoDB and start Firebase RTDB sync
+connectDB();
+startSync();
 
 const db = getFirestore();
 const authAdmin = getAuth();
@@ -105,7 +138,7 @@ app.use(express.urlencoded({ extended: true }));
 // Rate Limiters
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 1000, // Increased for production-grade load tolerance
   message: { error: 'Too many requests, try again later.' }
 });
 app.use('/api/', apiLimiter);
@@ -173,9 +206,19 @@ const getRazorpayInstance = async (machineId: string): Promise<{ instance: Razor
         machineId,
         ...data
       };
+
+      // 1. Prioritize user's Razorpay keys from MongoDB if linked
+      if (config.vendorUid) {
+        const vendorUser = await User.findById(config.vendorUid);
+        if (vendorUser && (vendorUser.razorpayKeyId || vendorUser.razorpayKeySecret)) {
+          config.razorpayKeyId = vendorUser.razorpayKeyId || config.razorpayKeyId;
+          config.razorpayKeySecret = vendorUser.razorpayKeySecret || config.razorpayKeySecret;
+          console.log(`[PAYMENT] Resolved Razorpay credentials from MongoDB user ${vendorUser.email} for machine ${machineId}`);
+        }
+      }
     }
   } catch (err: any) {
-    console.error(`[DB] Error fetching machine config for ${machineId}:`, err.message);
+    console.error(`[DB] Error fetching machine/user config for ${machineId}:`, err.message);
   }
 
   const keyId = config.razorpayKeyId || process.env.RAZORPAY_KEY_ID || 'rzp_live_TGx9X5Tby0KVB8';
@@ -211,6 +254,170 @@ const getPaymentsForMachine = async (machineId: string): Promise<any[]> => {
 // Root Status
 app.get('/', (req: Request, res: Response) => {
   res.json({ status: 'active', version: '2.1.0', service: 'FreshPod Dynamic Multi-Tenant API' });
+});
+
+// Create payment link via Razorpay
+app.post('/api/payment/create', async (req: Request, res: Response) => {
+  try {
+    const { machine_id } = req.body;
+    if (!machine_id) {
+      return res.status(400).json({ error: 'machine_id parameter is required' });
+    }
+
+    const { instance, config } = await getRazorpayInstance(machine_id);
+    const amountInPaise = Math.round(config.amount * 100);
+
+    // 1. Check Cache first
+    const cachedLink = linkCache.get(machine_id);
+    if (cachedLink && cachedLink.amount === amountInPaise) {
+      console.log(`[PAYMENT] Reusing cached active payment link for machine ${machine_id}`);
+      return res.json({
+        upi_intent: cachedLink.short_url,
+        qr_id: cachedLink.id
+      });
+    }
+
+    // 2. Generate a new payment link via Razorpay API
+    console.log(`[PAYMENT] Creating new payment link of ${config.amount} INR for machine ${machine_id}`);
+    const paymentLink = await instance.paymentLink.create({
+      amount: amountInPaise,
+      currency: 'INR',
+      accept_partial: false,
+      description: `Payment for FreshPod Kiosk`,
+      customer: {
+        name: 'FreshPod Customer'
+      },
+      notify: {
+        sms: false,
+        email: false
+      },
+      reminder_enable: false,
+      notes: {
+        machine_id: machine_id
+      }
+    });
+
+    // 3. Store active link config to cache
+    linkCache.set(machine_id, {
+      id: paymentLink.id,
+      short_url: paymentLink.short_url,
+      amount: amountInPaise,
+      machineId: machine_id
+    });
+
+    return res.json({
+      upi_intent: paymentLink.short_url,
+      qr_id: paymentLink.id
+    });
+  } catch (error: any) {
+    console.error(`[API] Failed to create payment:`, error);
+    const details = error.description || error.message || (error.error && error.error.description) || JSON.stringify(error);
+    return res.status(502).json({ error: 'Failed to create payment link', details });
+  }
+});
+
+// Verify payment status
+app.get('/api/payment/status', async (req: Request, res: Response) => {
+  const qr_id = req.query.qr_id as string;
+
+  if (!qr_id) {
+    return res.status(400).json({ error: 'qr_id parameter is required' });
+  }
+
+  // 1. Locate machine ID from the cached payment link
+  let machineId = 'default';
+  for (const [mId, cached] of linkCache.entries()) {
+    if (cached.id === qr_id) {
+      machineId = mId;
+      break;
+    }
+  }
+
+  try {
+    const { instance } = await getRazorpayInstance(machineId);
+
+    // 2. Fetch payment link details from Razorpay
+    const paymentLink = await instance.paymentLink.fetch(qr_id);
+
+    // Status mapping: 'created' (pending), 'paid' (paid), 'expired' / 'cancelled' (failed)
+    let status = 'pending';
+    if (paymentLink.status === 'paid') {
+      status = 'paid';
+      // Clean up cache once transaction is paid
+      if (machineId !== 'default') {
+        linkCache.delete(machineId);
+      }
+    } else if (paymentLink.status === 'expired' || paymentLink.status === 'cancelled') {
+      status = 'failed';
+    }
+
+    return res.json({ qr_id, status });
+  } catch (error: any) {
+    console.error(`[API] Failed to verify payment status:`, error);
+    const details = error.description || error.message || (error.error && error.error.description) || JSON.stringify(error);
+    return res.status(502).json({ error: 'Failed to verify payment status', details });
+  }
+});
+
+// Cache for payments listings to prevent rate limits
+const paymentsCache = new Map<string, { data: any[]; expiresAt: number }>();
+const PAYMENTS_CACHE_TTL = 60000; // 60 seconds TTL
+
+// Get all payments or payments for a specific machine ID
+app.get('/api/payments/all', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const machineId = req.query.machineId as string;
+
+  try {
+    if (!machineId || machineId === 'all') {
+      // 1. Get all machines from Firestore
+      const machinesSnap = await db.collection('machines').get();
+      const machineIds = machinesSnap.docs.map(doc => doc.id);
+
+      // 2. Fetch payments for each machine (uses individual caches)
+      const promises = machineIds.map(async (mId) => {
+        const cacheKey = `payments_${mId}`;
+        const now = Date.now();
+        const cached = paymentsCache.get(cacheKey);
+
+        if (cached && cached.expiresAt > now) {
+          return cached.data;
+        }
+
+        const payments = await getPaymentsForMachine(mId);
+        paymentsCache.set(cacheKey, {
+          data: payments,
+          expiresAt: now + PAYMENTS_CACHE_TTL
+        });
+        return payments;
+      });
+
+      const results = await Promise.all(promises);
+      const aggregated = results.reduce((acc, val) => acc.concat(val), []);
+      aggregated.sort((a: any, b: any) => b.created_at - a.created_at);
+
+      return res.json(aggregated);
+    } else {
+      // Fetch for a single machine
+      const cacheKey = `payments_${machineId}`;
+      const now = Date.now();
+      const cached = paymentsCache.get(cacheKey);
+
+      if (cached && cached.expiresAt > now) {
+        return res.json(cached.data);
+      }
+
+      const payments = await getPaymentsForMachine(machineId);
+      paymentsCache.set(cacheKey, {
+        data: payments,
+        expiresAt: now + PAYMENTS_CACHE_TTL
+      });
+
+      return res.json(payments);
+    }
+  } catch (err: any) {
+    console.error('Error fetching payments:', err.message);
+    res.status(500).json({ error: 'Failed to fetch payments', details: err.message });
+  }
 });
 
 // Dynamic Firebase client config fetch
@@ -500,6 +707,236 @@ app.get('/api/payments/export', async (req: Request, res: Response) => {
     res.status(500).send('Export failed');
   }
 });
+
+// Refill API endpoints from legacy dashboard
+app.get('/api/refill/:machineId/start-tapcount', async (req: Request, res: Response) => {
+  try {
+    const { machineId } = req.params;
+    console.log('📥 GET start-tapcount for:', machineId);
+
+    if (!machineId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Machine ID is required'
+      });
+    }
+
+    const machine = await Machine.findOne({ machineId: machineId });
+    if (!machine) {
+      return res.status(404).json({
+        success: false,
+        message: `Machine with ID "${machineId}" not found`
+      });
+    }
+
+    const refill = await SanitizationRefill.findOne({ machineId: machineId });
+
+    if (!refill) {
+      return res.status(200).json({
+        success: false,
+        message: `No refill record found`,
+        data: {
+          machineId: machineId,
+          startTapCount: 0,
+          hasRefill: false,
+          containerSize: 5,
+          usagePerTap: 0.012,
+          totalTaps: machine.totalTaps || 0
+        }
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        machineId: refill.machineId,
+        startTapCount: refill.tapCountAtRefill || 0,
+        refillStartTime: refill.start,
+        refillId: refill._id,
+        hasRefill: true,
+        containerSize: refill.containerSize || 5,
+        usagePerTap: refill.usagePerTap || 0.012,
+        totalTaps: machine.totalTaps || 0
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/refill/:machineId', async (req: Request, res: Response) => {
+  try {
+    const { machineId } = req.params;
+    const { tapCount, containerSize = 5, usagePerTap = 0.012 } = req.body;
+
+    console.log('📝 Refill request:', { machineId, tapCount, containerSize });
+
+    if (!machineId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Machine ID is required' 
+      });
+    }
+
+    if (tapCount === undefined || tapCount === null) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Tap count is required' 
+      });
+    }
+
+    const machine = await Machine.findOne({ machineId: machineId });
+    if (!machine) {
+      return res.status(404).json({
+        success: false,
+        message: `Machine with ID "${machineId}" not found`
+      });
+    }
+
+    let refill = await SanitizationRefill.findOne({ machineId: machineId });
+
+    if (refill) {
+      refill.tapCountAtRefill = tapCount;
+      refill.containerSize = containerSize;
+      refill.usagePerTap = usagePerTap;
+      refill.start = new Date();
+      await refill.save();
+      console.log('✅ Refill updated:', machineId);
+    } else {
+      refill = new SanitizationRefill({
+        machineId: machineId,
+        tapCountAtRefill: tapCount,
+        containerSize: containerSize,
+        usagePerTap: usagePerTap,
+        start: new Date()
+      });
+      await refill.save();
+      console.log('✅ Refill created:', machineId);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Refill completed successfully',
+      data: {
+        machineId: refill.machineId,
+        tapCountAtRefill: refill.tapCountAtRefill,
+        containerSize: refill.containerSize,
+        usagePerTap: refill.usagePerTap,
+        start: refill.start,
+        refillId: refill._id
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error starting refill:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Register new vendor directly in Firebase Auth & Firestore, and create machine config
+app.post('/api/admin/create-vendor', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { email, password, machineId, location, amount, razorpayKeyId, razorpayKeySecret } = req.body;
+
+  if (!email || !password || !machineId || !location || !amount) {
+    return res.status(400).json({ error: 'Missing required configuration fields' });
+  }
+
+  const formattedEmail = email.toLowerCase().trim();
+
+  try {
+    // 1. Check if machine is already registered in Firestore
+    const machineCheck = await db.collection('machines').doc(machineId).get();
+    if (machineCheck.exists) {
+      return res.status(400).json({ error: 'Machine ID already registered to a vendor' });
+    }
+
+    // 2. Create the user in Firebase Authentication
+    const userRecord = await authAdmin.createUser({
+      email: formattedEmail,
+      password: password
+    });
+    const uid = userRecord.uid;
+
+    // 3. Write User profile in Firestore collection 'users' under uid
+    await db.collection('users').doc(uid).set({
+      email: formattedEmail,
+      role: 'vendor',
+      machineId: machineId,
+      location: location,
+      createdAt: Date.now()
+    });
+
+    // 4. Write Machine configuration in Firestore collection 'machines' under machineId
+    await db.collection('machines').doc(machineId).set({
+      vendorUid: uid,
+      location: location,
+      amount: Number(amount),
+      razorpayKeyId: razorpayKeyId || '',
+      razorpayKeySecret: razorpayKeySecret || '',
+      updatedAt: Date.now()
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Vendor and Kiosk registered successfully',
+      vendor: {
+        uid,
+        email: formattedEmail,
+        machineId,
+        location
+      }
+    });
+  } catch (err: any) {
+    console.error('[API] Error creating vendor:', err.message);
+    res.status(500).json({ error: 'Failed to create vendor account', details: err.message });
+  }
+});
+
+// Delete vendor from Firebase Auth & Firestore, and remove machine config
+app.delete('/api/admin/delete-vendor/:uid', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const { uid } = req.params;
+  const { machineId } = req.query;
+
+  try {
+    // 1. Delete user from Firebase Authentication
+    try {
+      await authAdmin.deleteUser(uid);
+      console.log(`[API] Deleted user ${uid} from Firebase Auth`);
+    } catch (authErr: any) {
+      console.warn(`[API] Failed to delete user ${uid} from Firebase Auth (might not exist):`, authErr.message);
+    }
+
+    // 2. Delete user document from Firestore
+    await db.collection('users').doc(uid).delete();
+
+    // 3. Delete machine document from Firestore
+    if (machineId && typeof machineId === 'string') {
+      await db.collection('machines').doc(machineId).delete();
+    }
+
+    res.json({ success: true, message: 'Vendor and kiosk configuration deleted successfully' });
+  } catch (err: any) {
+    console.error('[API] Error deleting vendor:', err.message);
+    res.status(500).json({ error: 'Failed to delete vendor', details: err.message });
+  }
+});
+
+// Mount legacy dashboard routes
+app.use('/user', userRoute);
+app.use('/admin', adminRoute);
+app.use('/dealership', dealershipRoute);
+app.use('/customer', customerRoute);
+app.use('/operator', operatorRoutes);
 
 // Custom error handling middleware
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
