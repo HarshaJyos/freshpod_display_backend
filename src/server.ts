@@ -385,24 +385,6 @@ app.post('/api/payment/create', async (req: Request, res: Response) => {
       machineId: resolvedMachineId
     });
 
-    // 4. Save a pending transaction to MongoDB
-    try {
-      await Payment.create({
-        paymentId: paymentLink.id,
-        qrId: paymentLink.id,
-        machineId: resolvedMachineId,
-        amount: config.amount,
-        method: 'Razorpay',
-        status: 'pending',
-        customerName: 'N/A',
-        customerEmail: 'N/A',
-        customerPhone: 'N/A',
-        timestamp: new Date()
-      });
-    } catch (dbErr: any) {
-      console.error('[DB] Failed to record pending Razorpay payment in MongoDB:', dbErr.message);
-    }
-
     return res.json({
       upi_intent: paymentLink.short_url,
       qr_id: paymentLink.id
@@ -449,25 +431,32 @@ app.get('/api/payment/status', async (req: Request, res: Response) => {
       status = 'failed';
     }
 
-    // 3. Update payment in MongoDB
-    try {
-      const updateData: any = {
-        status: status === 'paid' ? 'paid' : status === 'failed' ? 'failed' : 'pending'
-      };
-
-      if (paymentLink.customer) {
-        updateData.customerName = paymentLink.customer.name || 'N/A';
-        updateData.customerEmail = paymentLink.customer.email || 'N/A';
-        updateData.customerPhone = paymentLink.customer.contact || 'N/A';
+    // 3. Save payment to MongoDB only on payment success
+    if (status === 'paid') {
+      try {
+        const actualMachineId = paymentLink.notes?.machine_id || machineId;
+        await Payment.findOneAndUpdate(
+          { qrId: qr_id },
+          {
+            $set: {
+              paymentId: paymentLink.id,
+              qrId: qr_id,
+              machineId: String(actualMachineId),
+              amount: Number(paymentLink.amount) / 100,
+              method: 'Razorpay',
+              status: 'paid',
+              customerName: paymentLink.customer?.name || 'N/A',
+              customerEmail: paymentLink.customer?.email || 'N/A',
+              customerPhone: paymentLink.customer?.contact || 'N/A',
+              timestamp: new Date()
+            }
+          },
+          { upsert: true, new: true }
+        );
+        console.log(`[DB] Successfully recorded paid Razorpay transaction for machine ${actualMachineId}`);
+      } catch (dbErr: any) {
+        console.error('[DB] Failed to save paid Razorpay payment in MongoDB:', dbErr.message);
       }
-
-      await Payment.findOneAndUpdate(
-        { qrId: qr_id },
-        { $set: updateData },
-        { upsert: true, new: true }
-      );
-    } catch (dbErr: any) {
-      console.error('[DB] Failed to update Razorpay payment in MongoDB:', dbErr.message);
     }
 
     return res.json({ qr_id, status });
@@ -475,6 +464,67 @@ app.get('/api/payment/status', async (req: Request, res: Response) => {
     console.error(`[API] Failed to verify payment status:`, error);
     const details = error.description || error.message || (error.error && error.error.description) || JSON.stringify(error);
     return res.status(502).json({ error: 'Failed to verify payment status', details });
+  }
+});
+
+// Manually verify and sync a Razorpay payment link from the dashboard
+app.post('/api/payment/verify-manual', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { qr_id } = req.body;
+    if (!qr_id) {
+      return res.status(400).json({ error: 'qr_id parameter is required' });
+    }
+
+    // Find the machineId from cache or default, and resolve Razorpay instance
+    let machineId = 'default';
+    for (const [mId, cached] of linkCache.entries()) {
+      if (cached.id === qr_id) {
+        machineId = mId;
+        break;
+      }
+    }
+
+    // Resolve instance (using default or resolved machine credentials)
+    const { instance } = await getRazorpayInstance(machineId);
+    const paymentLink = await instance.paymentLink.fetch(qr_id);
+
+    const actualMachineId = String(paymentLink.notes?.machine_id || machineId);
+
+    let status = 'pending';
+    if (paymentLink.status === 'paid') {
+      status = 'paid';
+      // Clean up cache
+      if (actualMachineId !== 'default') {
+        linkCache.delete(actualMachineId);
+      }
+
+      // Save to MongoDB
+      await Payment.findOneAndUpdate(
+        { qrId: qr_id },
+        {
+          $set: {
+            paymentId: paymentLink.id,
+            qrId: qr_id,
+            machineId: actualMachineId,
+            amount: Number(paymentLink.amount) / 100,
+            method: 'Razorpay',
+            status: 'paid',
+            customerName: paymentLink.customer?.name || 'N/A',
+            customerEmail: paymentLink.customer?.email || 'N/A',
+            customerPhone: paymentLink.customer?.contact || 'N/A',
+            timestamp: new Date()
+          }
+        },
+        { upsert: true, new: true }
+      );
+
+      return res.json({ success: true, status: 'paid', message: 'Payment link successfully verified and recorded.' });
+    } else {
+      return res.json({ success: true, status: paymentLink.status, message: `Payment link status is: ${paymentLink.status}. No transaction recorded.` });
+    }
+  } catch (error: any) {
+    console.error(`[API] Failed manual verification:`, error);
+    return res.status(502).json({ error: 'Failed to verify payment link from Razorpay API.', details: error.message });
   }
 });
 
