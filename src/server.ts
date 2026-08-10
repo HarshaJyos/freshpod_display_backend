@@ -944,8 +944,8 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// Start server locally, but export for Vercel Serverless Functions
-if (process.env.NODE_ENV !== 'production') {
+// Start server locally or in container, but export for Vercel Serverless Functions
+if (process.env.NODE_ENV !== 'production' || process.env.PORT) {
   app.listen(PORT, () => {
     console.log(`[INFO] TS Backend running on port ${PORT}`);
   });
