@@ -17,8 +17,65 @@ const normalizeId = (val: any) => {
   return typeof val === "object" ? val._id?.toString() : val.toString();
 };
 
+// Helper to compute total and monthly payments revenue
+const getMachineRevenues = async (machineIds: string[]) => {
+  if (!machineIds || machineIds.length === 0) return { totalMap: {}, monthlyMap: {} };
+
+  const currentDate = new Date();
+  const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+  const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59);
+
+  try {
+    const totalAggregation = await Payment.aggregate([
+      { 
+        $match: { 
+          machineId: { $in: machineIds }, 
+          status: 'paid' 
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$machineId', 
+          totalRevenue: { $sum: '$amount' } 
+        } 
+      }
+    ]);
+
+    const monthlyAggregation = await Payment.aggregate([
+      { 
+        $match: { 
+          machineId: { $in: machineIds }, 
+          status: 'paid',
+          timestamp: { $gte: startOfMonth, $lte: endOfMonth }
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$machineId', 
+          monthlyRevenue: { $sum: '$amount' } 
+        } 
+      }
+    ]);
+
+    const totalMap: { [key: string]: number } = {};
+    totalAggregation.forEach((item: any) => {
+      totalMap[item._id] = item.totalRevenue;
+    });
+
+    const monthlyMap: { [key: string]: number } = {};
+    monthlyAggregation.forEach((item: any) => {
+      monthlyMap[item._id] = item.monthlyRevenue;
+    });
+
+    return { totalMap, monthlyMap };
+  } catch (err: any) {
+    console.error("Error aggregating revenues:", err.message);
+    return { totalMap: {}, monthlyMap: {} };
+  }
+};
+
 // Format machine response
-const formatMachineResponse = (machine: any, logsMap: any = {}) => ({
+const formatMachineResponse = (machine: any, logsMap: any = {}, totalRevenueMap: any = {}, monthlyRevenueMap: any = {}) => ({
   _id: machine._id.toString(),
   machineId: machine.machineId,
   location: machine.location,
@@ -32,6 +89,8 @@ const formatMachineResponse = (machine: any, logsMap: any = {}) => ({
   razorpayKeyId: machine.razorpayKeyId || "",
   razorpayKeySecret: machine.razorpayKeySecret || "",
   logs: logsMap[machine.machineId] || {},
+  totalRevenue: totalRevenueMap[machine.machineId] || 0,
+  monthlyRevenue: monthlyRevenueMap[machine.machineId] || 0,
   createdAt: machine.createdAt,
   updatedAt: machine.updatedAt
 });
@@ -121,8 +180,9 @@ router.get("/machine/data", auth, allowRoles("admin", "customer", "dealership"),
     const machines = await getMachinesByRole(req.user);
     const machineIds = machines.map((m: any) => m.machineId);
     const logsMap = await getLogsMap(machineIds); // Using the fixed version
+    const { totalMap, monthlyMap } = await getMachineRevenues(machineIds);
 
-    const response = machines.map((m: any) => formatMachineResponse(m, logsMap));
+    const response = machines.map((m: any) => formatMachineResponse(m, logsMap, totalMap, monthlyMap));
     res.json(response);
   } catch (err: any) {
     console.error("Error in /machine/data:", err);

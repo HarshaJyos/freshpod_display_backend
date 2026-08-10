@@ -3,6 +3,7 @@ import { Router, Response } from 'express';
 import Machine from '../Model/machineSchema';
 import User from '../Model/userSchema';
 import Log from '../Model/logSchema';
+import Payment from '../Model/paymentSchema';
 import { auth, allowRoles } from '../middleware/auth';
 // routes/dealershipRoute.js
 const router = Router();
@@ -129,6 +130,63 @@ router.get("/machines", auth, allowRoles("dealership"), async (req: any, res: Re
   }
 });
 
+// Helper to compute total and monthly payments revenue
+const getMachineRevenues = async (machineIds: string[]) => {
+  if (!machineIds || machineIds.length === 0) return { totalMap: {}, monthlyMap: {} };
+
+  const currentDate = new Date();
+  const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+  const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59);
+
+  try {
+    const totalAggregation = await Payment.aggregate([
+      { 
+        $match: { 
+          machineId: { $in: machineIds }, 
+          status: 'paid' 
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$machineId', 
+          totalRevenue: { $sum: '$amount' } 
+        } 
+      }
+    ]);
+
+    const monthlyAggregation = await Payment.aggregate([
+      { 
+        $match: { 
+          machineId: { $in: machineIds }, 
+          status: 'paid',
+          timestamp: { $gte: startOfMonth, $lte: endOfMonth }
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$machineId', 
+          monthlyRevenue: { $sum: '$amount' } 
+        } 
+      }
+    ]);
+
+    const totalMap: { [key: string]: number } = {};
+    totalAggregation.forEach((item: any) => {
+      totalMap[item._id] = item.totalRevenue;
+    });
+
+    const monthlyMap: { [key: string]: number } = {};
+    monthlyAggregation.forEach((item: any) => {
+      monthlyMap[item._id] = item.monthlyRevenue;
+    });
+
+    return { totalMap, monthlyMap };
+  } catch (err: any) {
+    console.error("Error aggregating revenues:", err.message);
+    return { totalMap: {}, monthlyMap: {} };
+  }
+};
+
 // ======================================================
 // GET MACHINE DATA WITH LOGS FOR DEALERSHIP
 // ======================================================
@@ -148,6 +206,7 @@ router.get("/machine/data", auth, allowRoles("dealership"), async (req: any, res
     
     const machineIds = machines.map((m: any) => m.machineId);
     const logs = await Log.find({ machineId: { $in: machineIds } });
+    const { totalMap, monthlyMap } = await getMachineRevenues(machineIds);
 
     const logsMap = {};
     logs.forEach((log: any) => {
@@ -165,6 +224,8 @@ router.get("/machine/data", auth, allowRoles("dealership"), async (req: any, res
         machineCost: machine.machineCost,
         costPerTap: machine.costPerTap,
         totalTaps: machine.totalTaps || 0,
+        totalRevenue: totalMap[machine.machineId] || 0,
+        monthlyRevenue: monthlyMap[machine.machineId] || 0,
         status: machine.status,
         dealership: machine.dealership,
         assignedTo: machine.assignedTo,

@@ -5,6 +5,7 @@ import User from '../Model/userSchema';
 import Log from '../Model/logSchema';
 import Report from '../Model/reportSchema';
 import CustomerMachineSettings from '../Model/customerMachineSettingsSchema';
+import Payment from '../Model/paymentSchema';
 import { auth, allowRoles } from '../middleware/auth';
 // routes/customerRoutes.js - COMPLETE FIXED VERSION
 
@@ -14,6 +15,63 @@ const router = Router();
 // ======================================================
 // HELPER FUNCTIONS
 // ======================================================
+
+// Helper to compute total and monthly payments revenue
+const getMachineRevenues = async (machineIds: string[]) => {
+  if (!machineIds || machineIds.length === 0) return { totalMap: {}, monthlyMap: {} };
+
+  const currentDate = new Date();
+  const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+  const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59);
+
+  try {
+    const totalAggregation = await Payment.aggregate([
+      { 
+        $match: { 
+          machineId: { $in: machineIds }, 
+          status: 'paid' 
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$machineId', 
+          totalRevenue: { $sum: '$amount' } 
+        } 
+      }
+    ]);
+
+    const monthlyAggregation = await Payment.aggregate([
+      { 
+        $match: { 
+          machineId: { $in: machineIds }, 
+          status: 'paid',
+          timestamp: { $gte: startOfMonth, $lte: endOfMonth }
+        } 
+      },
+      { 
+        $group: { 
+          _id: '$machineId', 
+          monthlyRevenue: { $sum: '$amount' } 
+        } 
+      }
+    ]);
+
+    const totalMap: { [key: string]: number } = {};
+    totalAggregation.forEach((item: any) => {
+      totalMap[item._id] = item.totalRevenue;
+    });
+
+    const monthlyMap: { [key: string]: number } = {};
+    monthlyAggregation.forEach((item: any) => {
+      monthlyMap[item._id] = item.monthlyRevenue;
+    });
+
+    return { totalMap, monthlyMap };
+  } catch (err: any) {
+    console.error("Error aggregating revenues:", err.message);
+    return { totalMap: {}, monthlyMap: {} };
+  }
+};
 
 // Get total taps for a machine from TAP_DISPENSED logs
 const getMachineTotalTaps = async (machineId) => {
@@ -103,6 +161,10 @@ router.get("/machines", auth, allowRoles("customer"), async (req: any, res: Resp
     const currentDate = new Date();
     const currentYear = currentDate.getFullYear();
     const currentMonth = currentDate.getMonth() + 1;
+
+    // Get combined payment revenues (Razorpay + MQTT)
+    const machineIdStrings = machines.map((m: any) => m.machineId);
+    const { totalMap, monthlyMap } = await getMachineRevenues(machineIdStrings);
     
     const response = await Promise.all(machines.map(async (machine) => {
       const machineSettings = settingsMap[machine._id.toString()];
@@ -115,7 +177,8 @@ router.get("/machines", auth, allowRoles("customer"), async (req: any, res: Resp
       const rentPerMonth = machineSettings?.rentPerMonth || 0;
       const maintenanceCost = machineSettings?.maintenanceCostPerMonth || 0;
       
-      const monthlyRevenue = monthlyTaps * costPerTap;
+      const monthlyRevenue = monthlyMap[machine.machineId] || 0;
+      const totalRevenue = totalMap[machine.machineId] || 0;
       const netProfit = monthlyRevenue - (rentPerMonth + maintenanceCost);
       const profitMargin = monthlyRevenue > 0 ? (netProfit / monthlyRevenue) * 100 : 0;
       
@@ -140,6 +203,7 @@ router.get("/machines", auth, allowRoles("customer"), async (req: any, res: Resp
         machineCost: machine.machineCost || 0,
         monthlyTaps: monthlyTaps,
         monthlyRevenue: monthlyRevenue,
+        totalRevenue: totalRevenue,
         netProfit: netProfit,
         profitMargin: profitMargin.toFixed(2),
         status: machine.status || 'active',
@@ -396,17 +460,14 @@ router.get("/dashboard", auth, allowRoles("customer"), async (req: any, res: Res
     const dateRegex = `${currentYear}-${monthStr}`;
     
     let totalTapsMonth = 0;
-    let totalRevenueMonth = 0;
     let activeMachines = 0;
+
+    // Get combined payment revenues (Razorpay + MQTT)
+    const machineIdStrings = machines.map((m: any) => m.machineId);
+    const { monthlyMap } = await getMachineRevenues(machineIdStrings);
+    let totalRevenueMonth = 0;
     
     for (const machine of machines) {
-      const settings = await CustomerMachineSettings.findOne({
-        customerId,
-        machineId: machine._id
-      }).lean();
-      
-      const costPerTap = settings?.costPerTap || machine.costPerTap || 0.50;
-      
       // Get monthly taps from TAP_DISPENSED logs
       const monthlyTapsResult = await Log.aggregate([
         {
@@ -427,7 +488,7 @@ router.get("/dashboard", auth, allowRoles("customer"), async (req: any, res: Res
       const machineMonthTaps = monthlyTapsResult.length > 0 ? monthlyTapsResult[0].total : 0;
       
       totalTapsMonth += machineMonthTaps;
-      totalRevenueMonth += machineMonthTaps * costPerTap;
+      totalRevenueMonth += monthlyMap[machine.machineId] || 0;
       if (machineMonthTaps > 0) activeMachines++;
     }
     
