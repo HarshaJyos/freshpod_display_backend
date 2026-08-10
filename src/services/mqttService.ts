@@ -1,6 +1,7 @@
 import mqtt, { MqttClient } from 'mqtt';
 import Machine from '../Model/machineSchema';
 import Log from '../Model/logSchema';
+import Payment from '../Model/paymentSchema';
 
 class MQTTHandler {
   public client: MqttClient | null = null;
@@ -67,6 +68,11 @@ class MQTTHandler {
       } else if (data.status === 'completed') {
         console.log(`Machine ${machineId} completed dispensing`);
         
+        const session = this.machineSessions.get(machineId);
+        const amount = session ? session.amount : machine.costPerTap || 70;
+        const transactionId = session ? session.transactionId : `TXN_MQTT_${Date.now()}`;
+        const customerId = session ? session.customerId : 'unknown';
+
         await Machine.updateOne(
           { machineId },
           { 
@@ -84,6 +90,26 @@ class MQTTHandler {
           },
           { upsert: true }
         );
+
+        // Record MQTT payment transaction in MongoDB
+        try {
+          await Payment.create({
+            paymentId: transactionId,
+            machineId: machineId,
+            amount: amount,
+            method: 'MQTT',
+            status: 'paid',
+            customerName: customerId,
+            customerEmail: 'N/A',
+            customerPhone: 'N/A',
+            timestamp: new Date()
+          });
+        } catch (dbErr: any) {
+          console.error('[DB] Failed to record completed MQTT payment in MongoDB:', dbErr.message);
+        }
+
+        // Clear active session
+        this.machineSessions.delete(machineId);
         
       } else if (data.status === 'error') {
         console.error(`Machine ${machineId} error:`, data.message);

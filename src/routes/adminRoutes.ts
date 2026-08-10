@@ -3,6 +3,7 @@ import { Router, Response } from 'express';
 import Machine from '../Model/machineSchema';
 import User from '../Model/userSchema';
 import Log from '../Model/logSchema';
+import Payment from '../Model/paymentSchema';
 import { auth, allowRoles } from '../middleware/auth';
 const router = Router();
 
@@ -846,6 +847,84 @@ router.post("/debug/fix-consistency", auth, allowRoles("admin"), async (req: any
       totalFixed: fixes.length
     });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   PAYMENTS HISTORY WITH ROLE-BASED FILTERING
+====================================================== */
+router.get("/payments/history", auth, allowRoles("admin", "dealership", "customer", "operator"), async (req: any, res: Response) => {
+  try {
+    const { role, id } = req.user;
+
+    let query: any = {};
+    let shouldFilterSensitiveData = true;
+
+    if (role === "admin") {
+      // Admins see all payments and full sensitive details
+      query = {};
+      shouldFilterSensitiveData = false;
+    } else {
+      // Find machines assigned to this user
+      const user = await User.findById(id).populate("assignedMachines", "machineId");
+      if (!user) {
+        return res.status(404).json({ message: "User profile not found" });
+      }
+
+      // Collect machineId strings (e.g. ['FP_MACHINE_01', 'FP_MACHINE_02'])
+      const assignedMachineIds = (user.assignedMachines || []).map((m: any) => m.machineId);
+      
+      // Filter payments by these machine IDs
+      query = { machineId: { $in: assignedMachineIds } };
+      shouldFilterSensitiveData = true;
+    }
+
+    const payments = await Payment.find(query).sort({ timestamp: -1 });
+
+    // Calculate aggregations
+    let totalAmount = 0;
+    let mqttAmount = 0;
+    let razorpayAmount = 0;
+
+    const formattedPayments = payments.map((payment: any) => {
+      const amt = payment.amount || 0;
+      totalAmount += amt;
+      if (payment.method === "MQTT") {
+        mqttAmount += amt;
+      } else if (payment.method === "Razorpay") {
+        razorpayAmount += amt;
+      }
+
+      // Exclude customer details if user is not admin
+      return {
+        _id: payment._id.toString(),
+        paymentId: payment.paymentId,
+        qrId: payment.qrId,
+        machineId: payment.machineId,
+        amount: amt,
+        method: payment.method,
+        status: payment.status,
+        timestamp: payment.timestamp,
+        customerName: shouldFilterSensitiveData ? undefined : payment.customerName,
+        customerEmail: shouldFilterSensitiveData ? undefined : payment.customerEmail,
+        customerPhone: shouldFilterSensitiveData ? undefined : payment.customerPhone
+      };
+    });
+
+    res.json({
+      success: true,
+      summary: {
+        totalAmount,
+        mqttAmount,
+        razorpayAmount,
+        count: formattedPayments.length
+      },
+      payments: formattedPayments
+    });
+
+  } catch (err: any) {
+    console.error("Error fetching payment history:", err);
     res.status(500).json({ error: err.message });
   }
 });

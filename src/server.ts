@@ -14,6 +14,7 @@ import startSync from './init/sync';
 import SanitizationRefill from './Model/SantizationLiquid';
 import Machine from './Model/machineSchema';
 import User from './Model/userSchema';
+import Payment from './Model/paymentSchema';
 import mqttService from './services/mqttService';
 
 import userRoute from './routes/userRoute';
@@ -384,6 +385,24 @@ app.post('/api/payment/create', async (req: Request, res: Response) => {
       machineId: resolvedMachineId
     });
 
+    // 4. Save a pending transaction to MongoDB
+    try {
+      await Payment.create({
+        paymentId: paymentLink.id,
+        qrId: paymentLink.id,
+        machineId: resolvedMachineId,
+        amount: config.amount,
+        method: 'Razorpay',
+        status: 'pending',
+        customerName: 'N/A',
+        customerEmail: 'N/A',
+        customerPhone: 'N/A',
+        timestamp: new Date()
+      });
+    } catch (dbErr: any) {
+      console.error('[DB] Failed to record pending Razorpay payment in MongoDB:', dbErr.message);
+    }
+
     return res.json({
       upi_intent: paymentLink.short_url,
       qr_id: paymentLink.id
@@ -428,6 +447,27 @@ app.get('/api/payment/status', async (req: Request, res: Response) => {
       }
     } else if (paymentLink.status === 'expired' || paymentLink.status === 'cancelled') {
       status = 'failed';
+    }
+
+    // 3. Update payment in MongoDB
+    try {
+      const updateData: any = {
+        status: status === 'paid' ? 'paid' : status === 'failed' ? 'failed' : 'pending'
+      };
+
+      if (paymentLink.customer) {
+        updateData.customerName = paymentLink.customer.name || 'N/A';
+        updateData.customerEmail = paymentLink.customer.email || 'N/A';
+        updateData.customerPhone = paymentLink.customer.contact || 'N/A';
+      }
+
+      await Payment.findOneAndUpdate(
+        { qrId: qr_id },
+        { $set: updateData },
+        { upsert: true, new: true }
+      );
+    } catch (dbErr: any) {
+      console.error('[DB] Failed to update Razorpay payment in MongoDB:', dbErr.message);
     }
 
     return res.json({ qr_id, status });
