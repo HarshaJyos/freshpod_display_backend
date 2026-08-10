@@ -28,6 +28,8 @@ const formatMachineResponse = (machine: any, logsMap: any = {}) => ({
   status: machine.status || "active",
   assignedTo: normalizeId(machine.assignedTo),
   dealership: normalizeId(machine.dealership),
+  razorpayKeyId: machine.razorpayKeyId || "",
+  razorpayKeySecret: machine.razorpayKeySecret || "",
   logs: logsMap[machine.machineId] || {},
   createdAt: machine.createdAt,
   updatedAt: machine.updatedAt
@@ -192,7 +194,7 @@ router.get("/user/:id/available-machines", auth, allowRoles("admin"), async (req
 ====================================================== */
 router.post("/machine", auth, allowRoles("admin"), async (req: any, res: Response) => {
   try {
-    const { machineId, location, state, country, costPerTap } = req.body;
+    const { machineId, location, state, country, costPerTap, machineCost, status, razorpayKeyId, razorpayKeySecret } = req.body;
 
     if (!machineId || !location || !state) {
       return res.status(400).json({ message: "Missing fields" });
@@ -206,13 +208,48 @@ router.post("/machine", auth, allowRoles("admin"), async (req: any, res: Respons
       location,
       state,
       country: country || "India",
-      costPerTap,
+      costPerTap: costPerTap || 0.50,
+      machineCost: machineCost || 100,
+      status: status || "active",
       assignedTo: null,
-      dealership: null
+      dealership: null,
+      razorpayKeyId: razorpayKeyId || "",
+      razorpayKeySecret: razorpayKeySecret || ""
     });
 
     res.status(201).json(machine);
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   UPDATE MACHINE
+====================================================== */
+router.put("/machine/:id", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { machineId, location, state, country, costPerTap, machineCost, status, razorpayKeyId, razorpayKeySecret } = req.body;
+
+    const machine = await Machine.findById(id);
+    if (!machine) {
+      return res.status(404).json({ message: "Machine not found" });
+    }
+
+    if (machineId) machine.machineId = machineId;
+    if (location !== undefined) machine.location = location;
+    if (state !== undefined) machine.state = state;
+    if (country !== undefined) machine.country = country;
+    if (costPerTap !== undefined) machine.costPerTap = costPerTap;
+    if (machineCost !== undefined) machine.machineCost = machineCost;
+    if (status !== undefined) machine.status = status;
+    if (razorpayKeyId !== undefined) machine.razorpayKeyId = razorpayKeyId;
+    if (razorpayKeySecret !== undefined) machine.razorpayKeySecret = razorpayKeySecret;
+
+    await machine.save();
+    res.json(machine);
+  } catch (err: any) {
+    console.error("Error updating machine:", err);
     res.status(500).json({ error: err.message });
   }
 });

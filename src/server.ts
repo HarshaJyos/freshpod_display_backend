@@ -21,6 +21,7 @@ import adminRoute from './routes/adminRoutes';
 import dealershipRoute from './routes/dealershipRoute';
 import customerRoute from './routes/customerRoutes';
 import operatorRoutes from './routes/operatorRoutes';
+import mongoose from 'mongoose';
 
 dotenv.config();
 
@@ -52,7 +53,7 @@ if (getApps().length === 0) {
         });
       } catch (fallbackErr: any) {
         console.error('[FIREBASE] Fallback ADC failed:', fallbackErr.message);
-        initializeApp({ 
+        initializeApp({
           projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed',
           databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
         });
@@ -67,7 +68,7 @@ if (getApps().length === 0) {
     } catch (err: any) {
       // If not initialized, fallback to project ID locally
       try {
-        initializeApp({ 
+        initializeApp({
           projectId: process.env.FIREBASE_PROJECT_ID || 'freshpod-901ed',
           databaseURL: 'https://freshpod-901ed-default-rtdb.asia-southeast1.firebasedatabase.app'
         });
@@ -187,46 +188,115 @@ const requireAdmin = (req: AuthenticatedRequest, res: Response, next: NextFuncti
 };
 
 // Dynamic Razorpay Instance Resolver based on Machine config
+// Dynamic Razorpay Instance Resolver based on Machine config
 const getRazorpayInstance = async (machineId: string): Promise<{ instance: Razorpay; config: MachineConfig }> => {
   let config: MachineConfig = {
     machineId,
     vendorUid: '',
     location: 'Fallback Default',
     amount: Number(process.env.QR_AMOUNT) || 50,
-    razorpayKeyId: process.env.RAZORPAY_KEY_ID,
-    razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET,
+    razorpayKeyId: '',
+    razorpayKeySecret: '',
     updatedAt: Date.now()
   };
 
+  let resolvedUserId: string | null = null;
+  let resolvedUserKeyId: string = '';
+  let resolvedUserKeySecret: string = '';
+
+  // 1. QUERY MONGODB MACHINE & USER COLLECTIONS FIRST
+  try {
+    const MachineModel = mongoose.models.Machine || mongoose.model('Machine');
+    const mongoMachine = await MachineModel.findOne({ machineId });
+    if (mongoMachine) {
+      // Find who the machine is assigned to in MongoDB
+      const userId = mongoMachine.assignedTo || mongoMachine.dealership || mongoMachine.operatorId;
+      if (userId) {
+        const mongoUser = await User.findById(userId);
+        if (mongoUser) {
+          resolvedUserId = mongoUser._id.toString();
+          resolvedUserKeyId = mongoUser.razorpayKeyId || '';
+          resolvedUserKeySecret = mongoUser.razorpayKeySecret || '';
+        }
+      }
+
+      // Also get machine-level fallback keys from MongoDB machine doc if present
+      config.razorpayKeyId = mongoMachine.razorpayKeyId || config.razorpayKeyId;
+      config.razorpayKeySecret = mongoMachine.razorpayKeySecret || config.razorpayKeySecret;
+      config.amount = mongoMachine.costPerTap || config.amount;
+      config.location = mongoMachine.location || config.location;
+    }
+  } catch (err: any) {
+    console.error(`[DB] Error fetching MongoDB machine config for ${machineId}:`, err.message);
+  }
+
+  // 2. QUERY FIREBASE FIRESTORE AS A FALLBACK/SUPPLEMENT
   try {
     const machineDoc = await db.collection('machines').doc(machineId).get();
     if (machineDoc.exists) {
-      const data = machineDoc.data() as Omit<MachineConfig, 'machineId'>;
-      config = {
-        machineId,
-        ...data
-      };
+      const data = machineDoc.data();
+      if (data) {
+        config.vendorUid = data.vendorUid || config.vendorUid;
+        config.amount = data.amount !== undefined ? Number(data.amount) : config.amount;
+        config.location = data.location || config.location;
 
-      // 1. Prioritize user's Razorpay keys from MongoDB if linked
-      if (config.vendorUid) {
-        const vendorUser = await User.findById(config.vendorUid);
-        if (vendorUser && (vendorUser.razorpayKeyId || vendorUser.razorpayKeySecret)) {
-          config.razorpayKeyId = vendorUser.razorpayKeyId || config.razorpayKeyId;
-          config.razorpayKeySecret = vendorUser.razorpayKeySecret || config.razorpayKeySecret;
-          console.log(`[PAYMENT] Resolved Razorpay credentials from MongoDB user ${vendorUser.email} for machine ${machineId}`);
+        // Machine-level keys fallback from Firestore machine doc
+        config.razorpayKeyId = data.razorpayKeyId || config.razorpayKeyId;
+        config.razorpayKeySecret = data.razorpayKeySecret || config.razorpayKeySecret;
+
+        // If we haven't resolved a MongoDB user yet, resolve using Firestore's vendorUid
+        if (!resolvedUserKeyId && config.vendorUid) {
+          let firebaseLinkedUser = await User.findById(config.vendorUid);
+          if (!firebaseLinkedUser) {
+            firebaseLinkedUser = await User.findOne({
+              $or: [
+                { _id: config.vendorUid },
+                { email: config.vendorUid }
+              ]
+            });
+          }
+
+          if (firebaseLinkedUser) {
+            resolvedUserKeyId = firebaseLinkedUser.razorpayKeyId || '';
+            resolvedUserKeySecret = firebaseLinkedUser.razorpayKeySecret || '';
+          }
         }
       }
     }
   } catch (err: any) {
-    console.error(`[DB] Error fetching machine/user config for ${machineId}:`, err.message);
+    console.error(`[DB] Error fetching Firestore machine config for ${machineId}:`, err.message);
   }
 
-  const keyId = config.razorpayKeyId || process.env.RAZORPAY_KEY_ID || 'rzp_live_TGx9X5Tby0KVB8';
-  const keySecret = config.razorpayKeySecret || process.env.RAZORPAY_KEY_SECRET || '9GizZR3GFrYMhKAwWESLSBnn';
+  // 3. APPLY RESOLUTION PRIORITY
+  // First priority: Assigned User's Razorpay credentials
+  let finalKeyId = resolvedUserKeyId;
+  let finalKeySecret = resolvedUserKeySecret;
+
+  // Second priority: Machine-level Razorpay credentials
+  if (!finalKeyId) {
+    finalKeyId = config.razorpayKeyId;
+    finalKeySecret = config.razorpayKeySecret;
+    if (finalKeyId) {
+      console.log(`[PAYMENT] Falling back to Machine-level credentials for machine ${machineId}`);
+    }
+  } else {
+    console.log(`[PAYMENT] Resolved Razorpay credentials from assigned User for machine ${machineId}`);
+  }
+
+  // Third priority (Fallback): Global System Env parameters
+  if (!finalKeyId) {
+    finalKeyId = process.env.RAZORPAY_KEY_ID || 'rzp_live_TGx9X5Tby0KVB8';
+    finalKeySecret = process.env.RAZORPAY_KEY_SECRET || '9GizZR3GFrYMhKAwWESLSBnn';
+    console.log(`[PAYMENT] Falling back to Global System Env credentials for machine ${machineId}`);
+  }
+
+  // Update config back with the resolved keys
+  config.razorpayKeyId = finalKeyId;
+  config.razorpayKeySecret = finalKeySecret;
 
   const instance = new Razorpay({
-    key_id: keyId,
-    key_secret: keySecret
+    key_id: finalKeyId,
+    key_secret: finalKeySecret
   });
 
   return { instance, config };
@@ -474,7 +544,7 @@ app.post('/api/auth/sync', async (req: Request, res: Response) => {
 
       if (placeholderDoc.exists) {
         const placeholderData = placeholderDoc.data() as Omit<UserProfile, 'uid'>;
-        
+
         // Link placeholder data to the new UID doc
         const linkedVendor: UserProfile = {
           uid,
@@ -658,7 +728,7 @@ app.get('/api/payments/all', requireAuth, async (req: AuthenticatedRequest, res:
       // 1. Admin reads all registered machines
       const machinesSnap = await db.collection('machines').get();
       const allPaymentsPromises = machinesSnap.docs.map((doc: any) => getPaymentsForMachine(doc.id));
-      
+
       const results = await Promise.all(allPaymentsPromises);
       let aggregatedPayments = results.reduce((acc: any[], val: any[]) => acc.concat(val), []);
 
@@ -684,11 +754,11 @@ app.get('/api/payments/export', async (req: Request, res: Response) => {
   try {
     const machinesSnap = await db.collection('machines').get();
     const allPaymentsPromises = machinesSnap.docs.map((doc: any) => getPaymentsForMachine(doc.id));
-    
+
     const results = await Promise.all(allPaymentsPromises);
     let aggregatedPayments = results.reduce((acc: any[], val: any[]) => acc.concat(val), []);
     aggregatedPayments.sort((a: any, b: any) => b.created_at - a.created_at);
-    
+
     let csv = 'Payment ID,Machine ID,Date,Amount (INR),Method,Status,Customer Email,Customer Contact\n';
     aggregatedPayments.forEach((p: any) => {
       const date = new Date(p.created_at * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
@@ -698,7 +768,7 @@ app.get('/api/payments/export', async (req: Request, res: Response) => {
       const mId = p.machineId || 'N/A';
       csv += `"${p.id}","${mId}","${date}",${amount},"${p.method}","${p.status}","${email}","${contact}"\n`;
     });
-    
+
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=freshpod_payments.csv');
     res.send(csv);
@@ -778,16 +848,16 @@ app.post('/api/refill/:machineId', async (req: Request, res: Response) => {
     console.log('📝 Refill request:', { machineId, tapCount, containerSize });
 
     if (!machineId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Machine ID is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Machine ID is required'
       });
     }
 
     if (tapCount === undefined || tapCount === null) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Tap count is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Tap count is required'
       });
     }
 
@@ -835,8 +905,8 @@ app.post('/api/refill/:machineId', async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error('❌ Error starting refill:', error);
-    return res.status(500).json({ 
-      success: false, 
+    return res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: error.message
     });

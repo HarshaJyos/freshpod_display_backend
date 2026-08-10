@@ -13,6 +13,8 @@ export interface IMachine extends Document {
   dealership?: mongoose.Types.ObjectId | string | null;
   operatorId?: mongoose.Types.ObjectId | string | null;
   assignedTo?: mongoose.Types.ObjectId | string | null;
+  razorpayKeyId?: string;
+  razorpayKeySecret?: string;
 }
 
 const machineSchema = new Schema<IMachine>({
@@ -67,6 +69,14 @@ const machineSchema = new Schema<IMachine>({
     type: Schema.Types.ObjectId,
     ref: "User",
     default: null
+  },
+  razorpayKeyId: {
+    type: String,
+    default: ""
+  },
+  razorpayKeySecret: {
+    type: String,
+    default: ""
   }
 }, { timestamps: true });
 
