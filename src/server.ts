@@ -203,12 +203,20 @@ const getRazorpayInstance = async (machineId: string): Promise<{ instance: Razor
   let resolvedUserId: string | null = null;
   let resolvedUserKeyId: string = '';
   let resolvedUserKeySecret: string = '';
+  let actualMachineId = machineId;
 
   // 1. QUERY MONGODB MACHINE & USER COLLECTIONS FIRST
   try {
     const MachineModel = mongoose.models.Machine || mongoose.model('Machine');
-    const mongoMachine = await MachineModel.findOne({ machineId });
+    let query: any = { machineId };
+    if (mongoose.Types.ObjectId.isValid(machineId)) {
+      query = { $or: [{ _id: machineId }, { machineId }] };
+    }
+    const mongoMachine = await MachineModel.findOne(query);
     if (mongoMachine) {
+      actualMachineId = mongoMachine.machineId; // Resolve original machineId string!
+      config.machineId = actualMachineId;
+
       // Find who the machine is assigned to in MongoDB
       const userId = mongoMachine.assignedTo || mongoMachine.dealership || mongoMachine.operatorId;
       if (userId) {
@@ -232,7 +240,7 @@ const getRazorpayInstance = async (machineId: string): Promise<{ instance: Razor
 
   // 2. QUERY FIREBASE FIRESTORE AS A FALLBACK/SUPPLEMENT
   try {
-    const machineDoc = await db.collection('machines').doc(machineId).get();
+    const machineDoc = await db.collection('machines').doc(actualMachineId).get();
     if (machineDoc.exists) {
       const data = machineDoc.data();
       if (data) {
@@ -264,7 +272,7 @@ const getRazorpayInstance = async (machineId: string): Promise<{ instance: Razor
       }
     }
   } catch (err: any) {
-    console.error(`[DB] Error fetching Firestore machine config for ${machineId}:`, err.message);
+    console.error(`[DB] Error fetching Firestore machine config for ${actualMachineId}:`, err.message);
   }
 
   // 3. APPLY RESOLUTION PRIORITY
@@ -277,17 +285,17 @@ const getRazorpayInstance = async (machineId: string): Promise<{ instance: Razor
     finalKeyId = config.razorpayKeyId;
     finalKeySecret = config.razorpayKeySecret;
     if (finalKeyId) {
-      console.log(`[PAYMENT] Falling back to Machine-level credentials for machine ${machineId}`);
+      console.log(`[PAYMENT] Falling back to Machine-level credentials for machine ${actualMachineId}`);
     }
   } else {
-    console.log(`[PAYMENT] Resolved Razorpay credentials from assigned User for machine ${machineId}`);
+    console.log(`[PAYMENT] Resolved Razorpay credentials from assigned User for machine ${actualMachineId}`);
   }
 
   // Third priority (Fallback): Global System Env parameters
   if (!finalKeyId) {
     finalKeyId = process.env.RAZORPAY_KEY_ID || 'rzp_live_TGx9X5Tby0KVB8';
     finalKeySecret = process.env.RAZORPAY_KEY_SECRET || '9GizZR3GFrYMhKAwWESLSBnn';
-    console.log(`[PAYMENT] Falling back to Global System Env credentials for machine ${machineId}`);
+    console.log(`[PAYMENT] Falling back to Global System Env credentials for machine ${actualMachineId}`);
   }
 
   // Update config back with the resolved keys
@@ -335,12 +343,13 @@ app.post('/api/payment/create', async (req: Request, res: Response) => {
     }
 
     const { instance, config } = await getRazorpayInstance(machine_id);
+    const resolvedMachineId = config.machineId; // Guaranteed to be the original machineId string!
     const amountInPaise = Math.round(config.amount * 100);
 
     // 1. Check Cache first
-    const cachedLink = linkCache.get(machine_id);
+    const cachedLink = linkCache.get(resolvedMachineId);
     if (cachedLink && cachedLink.amount === amountInPaise) {
-      console.log(`[PAYMENT] Reusing cached active payment link for machine ${machine_id}`);
+      console.log(`[PAYMENT] Reusing cached active payment link for machine ${resolvedMachineId}`);
       return res.json({
         upi_intent: cachedLink.short_url,
         qr_id: cachedLink.id
@@ -348,7 +357,7 @@ app.post('/api/payment/create', async (req: Request, res: Response) => {
     }
 
     // 2. Generate a new payment link via Razorpay API
-    console.log(`[PAYMENT] Creating new payment link of ${config.amount} INR for machine ${machine_id}`);
+    console.log(`[PAYMENT] Creating new payment link of ${config.amount} INR for machine ${resolvedMachineId}`);
     const paymentLink = await instance.paymentLink.create({
       amount: amountInPaise,
       currency: 'INR',
@@ -363,16 +372,16 @@ app.post('/api/payment/create', async (req: Request, res: Response) => {
       },
       reminder_enable: false,
       notes: {
-        machine_id: machine_id
+        machine_id: resolvedMachineId
       }
     });
 
     // 3. Store active link config to cache
-    linkCache.set(machine_id, {
+    linkCache.set(resolvedMachineId, {
       id: paymentLink.id,
       short_url: paymentLink.short_url,
       amount: amountInPaise,
-      machineId: machine_id
+      machineId: resolvedMachineId
     });
 
     return res.json({
