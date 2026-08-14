@@ -318,4 +318,179 @@ export class UserController {
       res.status(500).json({ error: err.message });
     }
   }
+
+  /**
+   * Create a Customer account linked to a Dealership.
+   */
+  static async createCustomer(req: any, res: Response) {
+    try {
+      const { name, email, phoneNumber, location, assignedMachineIds = [] } = req.body;
+      if (!name || !phoneNumber || !email || !location) {
+        return res.status(400).json({ message: "Missing required fields" });
+      }
+
+      const exists = await User.findOne({ email });
+      if (exists) return res.status(400).json({ message: "User already exists" });
+
+      const parentDealer = await User.findById(req.user.id);
+      if (!parentDealer) return res.status(404).json({ message: "Dealership not found" });
+
+      // Validate machines assigned to dealer
+      let validatedMachines: any[] = [];
+      if (assignedMachineIds.length > 0) {
+        validatedMachines = await Machine.find({
+          _id: { $in: assignedMachineIds },
+          dealership: parentDealer._id,
+          assignedTo: null
+        });
+
+        if (validatedMachines.length !== assignedMachineIds.length) {
+          return res.status(400).json({ message: "Some machines are invalid or already sold" });
+        }
+      }
+
+      const customer = await User.create({
+        name,
+        email,
+        phoneNumber,
+        location,
+        state: parentDealer.state,
+        country: parentDealer.country,
+        role: "customer",
+        parent: parentDealer._id,
+        assignedMachines: validatedMachines.map(m => m._id)
+      });
+
+      if (validatedMachines.length > 0) {
+        await Machine.updateMany(
+          { _id: { $in: validatedMachines.map(m => m._id) } },
+          { $set: { assignedTo: customer._id } }
+        );
+      }
+
+      res.status(201).json({
+        message: "Customer created successfully",
+        user: { id: customer._id, name: customer.name, email: customer.email }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+
+  /**
+   * Get all Customer accounts linked to this Dealership.
+   */
+  static async getCustomers(req: any, res: Response) {
+    try {
+      const customers = await User.find({
+        parent: req.user.id,
+        role: "customer",
+        isDeleted: { $ne: true }
+      }).select("-password -refreshToken").populate("assignedMachines", "machineId location status");
+
+      res.json(customers);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+
+  /**
+   * Create an Operator account linked to a Customer.
+   */
+  static async createOperator(req: any, res: Response) {
+    try {
+      const { name, email, phoneNumber, location, assignedMachineIds = [] } = req.body;
+      if (!name || !phoneNumber || !email) {
+        return res.status(400).json({ message: "Missing required fields" });
+      }
+
+      const exists = await User.findOne({ email });
+      if (exists) return res.status(400).json({ message: "User already exists" });
+
+      const parentCustomer = await User.findById(req.user.id);
+      if (!parentCustomer) return res.status(404).json({ message: "Customer profile not found" });
+
+      // Validate assigned machines
+      let validatedMachines: any[] = [];
+      if (assignedMachineIds.length > 0) {
+        validatedMachines = await Machine.find({
+          _id: { $in: assignedMachineIds },
+          assignedTo: parentCustomer._id
+        });
+
+        if (validatedMachines.length !== assignedMachineIds.length) {
+          return res.status(400).json({ message: "Some machines do not belong to your account" });
+        }
+      }
+
+      const operator = await User.create({
+        name,
+        email,
+        phoneNumber,
+        location: location || parentCustomer.location,
+        state: parentCustomer.state,
+        country: parentCustomer.country,
+        role: "operator",
+        parent: parentCustomer._id,
+        assignedMachines: validatedMachines.map(m => m._id)
+      });
+
+      if (validatedMachines.length > 0) {
+        await Machine.updateMany(
+          { _id: { $in: validatedMachines.map(m => m._id) } },
+          { $set: { operatorId: operator._id } }
+        );
+      }
+
+      res.status(201).json({
+        message: "Operator created successfully",
+        user: { id: operator._id, name: operator.name, email: operator.email }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+
+  /**
+   * List all Operator accounts linked to this Customer.
+   */
+  static async getOperators(req: any, res: Response) {
+    try {
+      const operators = await User.find({
+        parent: req.user.id,
+        role: "operator",
+        isDeleted: { $ne: true }
+      }).select("-password -refreshToken").populate("assignedMachines", "machineId location status");
+
+      res.json(operators);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+
+  /**
+   * Delete an Operator account.
+   */
+  static async deleteOperator(req: any, res: Response) {
+    try {
+      const { operatorId } = req.params;
+      const operator = await User.findOne({ _id: operatorId, parent: req.user.id, role: 'operator' });
+      if (!operator) return res.status(404).json({ message: "Operator not found" });
+
+      // Unassign machines from operator
+      await Machine.updateMany(
+        { operatorId: operator._id },
+        { $set: { operatorId: null } }
+      );
+
+      operator.isDeleted = true;
+      operator.deletedAt = new Date();
+      operator.assignedMachines = [];
+      await operator.save();
+
+      res.json({ message: "Operator soft-deleted successfully" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
 }

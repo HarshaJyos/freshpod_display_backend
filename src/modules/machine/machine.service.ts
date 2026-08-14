@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Machine, Log, SanitizationRefill, CustomerMachineSettings } from './machine.model';
 import User from '../user/user.model';
+import { Payment } from '../payment/payment.model';
 
 export class MachineService {
 
@@ -88,6 +89,8 @@ export class MachineService {
     const machine = await Machine.findOne({ machineId, isDeleted: { $ne: true } });
     if (!machine) throw new Error('Machine not found');
 
+    const finalAmount = amount || ((machine.costPerTap || 0.50) * (tapCount || 1));
+
     const log = await Log.create({
       machineId,
       date: today,
@@ -95,7 +98,7 @@ export class MachineService {
       action: "TAP_DISPENSED",
       status: "completed",
       initiatedBy: initiatedBy || null,
-      amount: amount || machine.costPerTap,
+      amount: finalAmount,
       sessionId: sessionId || `session_${Date.now()}`,
       sessionDuration: 0,
       sessionTaps: tapCount || 1,
@@ -105,13 +108,39 @@ export class MachineService {
     machine.totalTaps = (machine.totalTaps || 0) + (tapCount || 1);
     await machine.save();
 
-    // Broadcast WS update globally
+    // Auto-create Payment log entry to build unified source of truth for revenue
+    const paymentId = `PAY_TELEMETRY_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    try {
+      await Payment.create({
+        paymentId,
+        machineId: machine.machineId,
+        amount: finalAmount,
+        method: initiatedBy ? 'MQTT' : 'MQTT', // Can be classified as RFID or Operator
+        status: 'paid',
+        customerName: initiatedBy ? 'Operator Run' : 'RFID/Telemetry Tap',
+        customerEmail: 'N/A',
+        customerPhone: 'N/A',
+        timestamp: new Date()
+      });
+    } catch (payErr: any) {
+      console.error('[DB] Failed to auto-create payment log entry:', payErr.message);
+    }
+
+    // Broadcast WS updates globally
     if ((global as any).broadcastLiveEvent) {
       (global as any).broadcastLiveEvent('TELEMETRY_UPDATE', {
         machineId: machine.machineId,
         totalTaps: machine.totalTaps,
         status: machine.status,
         lastTap: log
+      });
+      (global as any).broadcastLiveEvent('PAYMENT_UPDATE', {
+        paymentId,
+        machineId: machine.machineId,
+        amount: finalAmount,
+        method: 'MQTT',
+        status: 'paid',
+        timestamp: new Date()
       });
     }
 

@@ -22,16 +22,10 @@ import startSync from './init/sync';
 import mqttService from './services/mqttService';
 
 // Modular routes
-import userModuleRouter from './modules/user/user.routes';
-import { adminMachineRouter, userMachineRouter, refillMachineRouter } from './modules/machine/machine.routes';
+import userModuleRouter, { dealershipUserRouter, customerUserRouter } from './modules/user/user.routes';
+import { adminMachineRouter, userMachineRouter, refillMachineRouter, operatorMachineRouter, dealershipMachineRouter, customerMachineRouter } from './modules/machine/machine.routes';
 import { adminPaymentRouter, apiPaymentRouter } from './modules/payment/payment.routes';
 import { adminReportRouter, customerReportRouter } from './modules/report/report.routes';
-
-// Legacy routes
-import adminRoute from './routes/adminRoutes';
-import dealershipRoute from './routes/dealershipRoute';
-import customerRoute from './routes/customerRoutes';
-import operatorRoutes from './routes/operatorRoutes';
 
 dotenv.config();
 
@@ -271,13 +265,14 @@ app.use('/admin', adminPaymentRouter);
 app.use('/admin', adminReportRouter);
 app.use('/api', apiPaymentRouter);
 app.use('/api', refillMachineRouter);
-app.use('/customer', customerReportRouter);
 
-// Mount remaining legacy dashboard routes
-app.use('/admin', adminRoute);
-app.use('/dealership', dealershipRoute);
-app.use('/customer', customerRoute);
-app.use('/operator', operatorRoutes);
+// Mount role-based sub-routers (replacing legacy express routers)
+app.use('/operator', operatorMachineRouter);
+app.use('/dealership', dealershipUserRouter);
+app.use('/dealership', dealershipMachineRouter);
+app.use('/customer', customerUserRouter);
+app.use('/customer', customerMachineRouter);
+app.use('/customer', customerReportRouter);
 
 // Custom error handling middleware
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
