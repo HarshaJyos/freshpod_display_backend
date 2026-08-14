@@ -158,6 +158,24 @@ export class PaymentController {
         machineId: resolvedMachineId
       });
 
+      // Log pending payment link in database to enable credentials lookup on cache clear/restart
+      try {
+        await Payment.create({
+          paymentId: paymentLink.id,
+          qrId: paymentLink.id,
+          machineId: resolvedMachineId,
+          amount: Number(paymentLink.amount) / 100,
+          method: 'Razorpay',
+          status: 'pending',
+          customerName: 'FreshPod Customer',
+          customerEmail: 'N/A',
+          customerPhone: 'N/A',
+          timestamp: new Date()
+        });
+      } catch (dbErr: any) {
+        console.error('[DB] Failed to create pending payment record:', dbErr.message);
+      }
+
       res.json({
         upi_intent: paymentLink.short_url,
         qr_id: paymentLink.id
@@ -180,6 +198,17 @@ export class PaymentController {
       if (cached.id === qr_id) {
         machineId = mId;
         break;
+      }
+    }
+
+    if (machineId === 'default') {
+      try {
+        const pendingPayment = await Payment.findOne({ qrId: qr_id });
+        if (pendingPayment) {
+          machineId = pendingPayment.machineId;
+        }
+      } catch (err: any) {
+        console.error('[DB] Error looking up pending payment:', err.message);
       }
     }
 
@@ -245,6 +274,17 @@ export class PaymentController {
         if (cached.id === qr_id) {
           machineId = mId;
           break;
+        }
+      }
+
+      if (machineId === 'default') {
+        try {
+          const pendingPayment = await Payment.findOne({ qrId: qr_id });
+          if (pendingPayment) {
+            machineId = pendingPayment.machineId;
+          }
+        } catch (err: any) {
+          console.error('[DB] Error looking up pending payment:', err.message);
         }
       }
 
