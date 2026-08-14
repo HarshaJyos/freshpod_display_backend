@@ -230,7 +230,7 @@ export class PaymentController {
         const paymentsArray = (paymentLink as any).payments;
         if (paymentsArray && paymentsArray.length > 0) {
           try {
-            const firstPaymentId = paymentsArray[0].id;
+            const firstPaymentId = paymentsArray[0].payment_id || paymentsArray[0].id;
             const actualPayment = await instance.payments.fetch(firstPaymentId);
             if (actualPayment) {
               customerEmail = actualPayment.email || customerEmail;
@@ -324,7 +324,7 @@ export class PaymentController {
         const paymentsArray = (paymentLink as any).payments;
         if (paymentsArray && paymentsArray.length > 0) {
           try {
-            const firstPaymentId = paymentsArray[0].id;
+            const firstPaymentId = paymentsArray[0].payment_id || paymentsArray[0].id;
             const actualPayment = await instance.payments.fetch(firstPaymentId);
             if (actualPayment) {
               customerEmail = actualPayment.email || customerEmail;
