@@ -55,7 +55,7 @@ export class PaymentService {
         razorpayAmount += amt;
       }
 
-      return {
+      const formatted: any = {
         _id: payment._id.toString(),
         paymentId: payment.paymentId,
         qrId: payment.qrId || "",
@@ -63,11 +63,16 @@ export class PaymentService {
         amount: amt,
         method: payment.method,
         status: payment.status,
-        timestamp: payment.timestamp,
-        customerName: shouldFilterSensitiveData ? undefined : payment.customerName,
-        customerEmail: shouldFilterSensitiveData ? undefined : payment.customerEmail,
-        customerPhone: shouldFilterSensitiveData ? undefined : payment.customerPhone
+        timestamp: payment.timestamp
       };
+
+      if (!shouldFilterSensitiveData) {
+        formatted.customerName = payment.customerName;
+        formatted.customerEmail = payment.customerEmail;
+        formatted.customerPhone = payment.customerPhone;
+      }
+
+      return formatted;
     });
 
     return {

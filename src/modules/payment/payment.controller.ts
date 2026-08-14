@@ -364,10 +364,7 @@ export class PaymentController {
             amount: Number(paymentLink.amount) / 100,
             method: 'Razorpay',
             status: 'paid',
-            timestamp: new Date(),
-            customerName,
-            customerEmail,
-            customerPhone
+            timestamp: new Date()
           });
         }
 
