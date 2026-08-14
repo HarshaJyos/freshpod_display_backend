@@ -222,6 +222,28 @@ export class PaymentController {
         if (machineId !== 'default') linkCache.delete(machineId);
 
         const actualMachineId = paymentLink.notes?.machine_id || machineId;
+
+        let customerName = paymentLink.customer?.name || 'FreshPod Customer';
+        let customerEmail = paymentLink.customer?.email || 'N/A';
+        let customerPhone = paymentLink.customer?.contact || 'N/A';
+
+        const paymentsArray = (paymentLink as any).payments;
+        if (paymentsArray && paymentsArray.length > 0) {
+          try {
+            const firstPaymentId = paymentsArray[0].id;
+            const actualPayment = await instance.payments.fetch(firstPaymentId);
+            if (actualPayment) {
+              customerEmail = actualPayment.email || customerEmail;
+              customerPhone = actualPayment.contact || customerPhone;
+              if (actualPayment.email) {
+                customerName = actualPayment.email.split('@')[0];
+              }
+            }
+          } catch (payFetchErr: any) {
+            console.error('[Razorpay] Failed to fetch sub-payment details:', payFetchErr.message);
+          }
+        }
+
         await Payment.findOneAndUpdate(
           { qrId: qr_id },
           {
@@ -232,9 +254,9 @@ export class PaymentController {
               amount: Number(paymentLink.amount) / 100,
               method: 'Razorpay',
               status: 'paid',
-              customerName: paymentLink.customer?.name || 'N/A',
-              customerEmail: paymentLink.customer?.email || 'N/A',
-              customerPhone: paymentLink.customer?.contact || 'N/A',
+              customerName,
+              customerEmail,
+              customerPhone,
               timestamp: new Date()
             }
           },
@@ -295,6 +317,27 @@ export class PaymentController {
       if (paymentLink.status === 'paid') {
         if (actualMachineId !== 'default') linkCache.delete(actualMachineId);
 
+        let customerName = paymentLink.customer?.name || 'FreshPod Customer';
+        let customerEmail = paymentLink.customer?.email || 'N/A';
+        let customerPhone = paymentLink.customer?.contact || 'N/A';
+
+        const paymentsArray = (paymentLink as any).payments;
+        if (paymentsArray && paymentsArray.length > 0) {
+          try {
+            const firstPaymentId = paymentsArray[0].id;
+            const actualPayment = await instance.payments.fetch(firstPaymentId);
+            if (actualPayment) {
+              customerEmail = actualPayment.email || customerEmail;
+              customerPhone = actualPayment.contact || customerPhone;
+              if (actualPayment.email) {
+                customerName = actualPayment.email.split('@')[0];
+              }
+            }
+          } catch (payFetchErr: any) {
+            console.error('[Razorpay] Failed to fetch sub-payment details:', payFetchErr.message);
+          }
+        }
+
         await Payment.findOneAndUpdate(
           { qrId: qr_id },
           {
@@ -305,9 +348,9 @@ export class PaymentController {
               amount: Number(paymentLink.amount) / 100,
               method: 'Razorpay',
               status: 'paid',
-              customerName: paymentLink.customer?.name || 'N/A',
-              customerEmail: paymentLink.customer?.email || 'N/A',
-              customerPhone: paymentLink.customer?.contact || 'N/A',
+              customerName,
+              customerEmail,
+              customerPhone,
               timestamp: new Date()
             }
           },
@@ -321,7 +364,10 @@ export class PaymentController {
             amount: Number(paymentLink.amount) / 100,
             method: 'Razorpay',
             status: 'paid',
-            timestamp: new Date()
+            timestamp: new Date(),
+            customerName,
+            customerEmail,
+            customerPhone
           });
         }
 
