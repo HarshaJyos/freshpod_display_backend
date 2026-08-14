@@ -1,7 +1,6 @@
 import mqtt, { MqttClient } from 'mqtt';
-import Machine from '../Model/machineSchema';
-import Log from '../Model/logSchema';
-import Payment from '../Model/paymentSchema';
+import { Machine, Log } from '../modules/machine/machine.model';
+import Payment from '../modules/payment/payment.model';
 
 class MQTTHandler {
   public client: MqttClient | null = null;
@@ -93,7 +92,7 @@ class MQTTHandler {
 
         // Record MQTT payment transaction in MongoDB
         try {
-          await Payment.create({
+          const payment = await Payment.create({
             paymentId: transactionId,
             machineId: machineId,
             amount: amount,
@@ -104,6 +103,21 @@ class MQTTHandler {
             customerPhone: 'N/A',
             timestamp: new Date()
           });
+          
+          if ((global as any).broadcastLiveEvent) {
+            (global as any).broadcastLiveEvent('PAYMENT_UPDATE', {
+              _id: payment._id.toString(),
+              paymentId: transactionId,
+              machineId: machineId,
+              amount: amount,
+              method: 'MQTT',
+              status: 'paid',
+              customerName: customerId,
+              customerEmail: 'N/A',
+              customerPhone: 'N/A',
+              timestamp: payment.timestamp
+            });
+          }
         } catch (dbErr: any) {
           console.error('[DB] Failed to record completed MQTT payment in MongoDB:', dbErr.message);
         }

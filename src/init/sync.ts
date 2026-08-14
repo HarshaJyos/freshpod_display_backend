@@ -1,6 +1,5 @@
 import db from './firebase';
-import Log from '../Model/logSchema';
-import Machine from '../Model/machineSchema';
+import { Log, Machine } from '../modules/machine/machine.model';
 
 function startSync(): void {
   console.log("🚀 Firebase → MongoDB sync started...");

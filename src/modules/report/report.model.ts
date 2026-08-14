@@ -5,14 +5,14 @@ export interface IReport extends Document {
   customer: {
     id: string;
     email: string;
-    name: string;
-    phone: string;
   };
   subject: string;
   description: string;
   status: 'pending' | 'solved';
   resolvedAt?: Date | null;
   resolutionNotes?: string | null;
+  isDeleted?: boolean;
+  deletedAt?: Date | null;
   markAsSolved(notes?: string): Promise<IReport>;
   getStatusDisplay(): string;
 }
@@ -33,27 +33,15 @@ const reportSchema = new Schema<IReport>({
     email: { 
       type: String, 
       required: true 
-    },
-    name: { 
-      type: String, 
-      required: true 
-    },
-    phone: {
-      type: String,
-      default: 'N/A'
     }
   },
-  subject: { 
-    type: String, 
-    required: true,
-    trim: true,
-    maxlength: 200
+  subject: {
+    type: String,
+    required: true
   },
-  description: { 
-    type: String, 
-    required: true,
-    trim: true,
-    maxlength: 1000
+  description: {
+    type: String,
+    required: true
   },
   status: {
     type: String,
@@ -68,6 +56,15 @@ const reportSchema = new Schema<IReport>({
   resolutionNotes: {
     type: String,
     default: null
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  deletedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -79,13 +76,15 @@ reportSchema.index({ createdAt: -1 });
 reportSchema.methods.markAsSolved = function(notes?: string): Promise<IReport> {
   this.status = 'solved';
   this.resolvedAt = new Date();
-  this.resolutionNotes = notes || 'Issue resolved';
+  if (notes) {
+    this.resolutionNotes = notes;
+  }
   return this.save();
 };
 
 reportSchema.methods.getStatusDisplay = function(): string {
-  return this.status === 'solved' ? '✅ Solved' : '⏳ Pending';
+  return this.status.toUpperCase();
 };
 
-const Report: Model<IReport> = mongoose.models.Report || mongoose.model<IReport>('Report', reportSchema);
+const Report: Model<IReport> = mongoose.models.Report || mongoose.model<IReport>("Report", reportSchema);
 export default Report;

@@ -17,6 +17,8 @@ export interface IUser extends Document {
   refreshToken?: string | null;
   razorpayKeyId?: string;
   razorpayKeySecret?: string;
+  isDeleted?: boolean;
+  deletedAt?: Date | null;
   comparePassword(candidatePassword: string): Promise<boolean>;
   generateAccessToken(): string;
   generateRefreshToken(): string;
@@ -33,28 +35,29 @@ const userSchema = new Schema<IUser>({
   },
   password: {
     type: String,
-    required: true,
-    select: false
+    required: true
   },
   role: {
     type: String,
-    enum: ["admin", "dealership", "customer", "operator"],
+    enum: ['admin', 'dealership', 'customer', 'operator'],
     required: true
   },
   phoneNumber: {
     type: String,
     required: true,
-    unique: true,
-    match: [/^[0-9]{10}$/, "Enter valid 10-digit phone number"]
+    unique: true
   },
-  location: String,
+  location: {
+    type: String,
+    default: ""
+  },
   state: {
     type: String,
     required: true
   },
   country: {
     type: String,
-    default: "India"
+    required: true
   },
   parent: {
     type: Schema.Types.ObjectId,
@@ -80,6 +83,15 @@ const userSchema = new Schema<IUser>({
   razorpayKeySecret: {
     type: String,
     default: ""
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  deletedAt: {
+    type: Date,
+    default: null
   }
 }, { timestamps: true });
 
@@ -92,39 +104,36 @@ userSchema.pre('validate', function() {
 
 // Hash password only if modified
 userSchema.pre('save', async function(this: IUser) {
-  if (!this.isModified('password')) {
-    return;
-  }
+  if (!this.isModified('password')) return;
   // Check if password is already hashed
-  if (this.password && this.password.startsWith('$2b$')) {
-    return;
-  }
-  
+  if (this.password && this.password.startsWith('$2b$')) return;
+
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password!, salt);
 });
 
+// Method to compare passwords
 userSchema.methods.comparePassword = async function(candidatePassword: string): Promise<boolean> {
-  return bcrypt.compare(candidatePassword, this.password || '');
+  return await bcrypt.compare(candidatePassword, this.password || '');
 };
 
+// Method to generate Access Token
 userSchema.methods.generateAccessToken = function(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw new Error('JWT_SECRET key missing');
+  const secret = process.env.JWT_SECRET || 'fallback_access_secret';
   return jwt.sign(
-    { id: this._id, role: this.role },
+    { id: this._id, email: this.email, role: this.role },
     secret,
-    { expiresIn: "15m" }
+    { expiresIn: '15m' }
   );
 };
 
+// Method to generate Refresh Token
 userSchema.methods.generateRefreshToken = function(): string {
-  const secret = process.env.JWT_REFRESH_SECRET;
-  if (!secret) throw new Error('JWT_REFRESH_SECRET key missing');
+  const secret = process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret';
   return jwt.sign(
     { id: this._id },
     secret,
-    { expiresIn: "7d" }
+    { expiresIn: '7d' }
   );
 };
 

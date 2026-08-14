@@ -1,11 +1,9 @@
 // @ts-nocheck
 import { Router, Response } from 'express';
-import Machine from '../Model/machineSchema';
-import User from '../Model/userSchema';
-import Log from '../Model/logSchema';
-import Report from '../Model/reportSchema';
-import CustomerMachineSettings from '../Model/customerMachineSettingsSchema';
-import Payment from '../Model/paymentSchema';
+import { Machine, Log, CustomerMachineSettings } from '../modules/machine/machine.model';
+import User from '../modules/user/user.model';
+import Report from '../modules/report/report.model';
+import Payment from '../modules/payment/payment.model';
 import { auth, allowRoles } from '../middleware/auth';
 // routes/customerRoutes.js - COMPLETE FIXED VERSION
 
@@ -196,6 +194,7 @@ router.get("/machines", auth, allowRoles("customer"), async (req: any, res: Resp
       return {
         _id: machine._id,
         machineId: machine.machineId,
+        qrId: machine.qrId || "",
         location: machine.location || 'N/A',
         state: machine.state || 'N/A',
         country: machine.country || 'India',

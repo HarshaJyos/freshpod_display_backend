@@ -1,8 +1,7 @@
 // @ts-nocheck
 import { Router, Response } from 'express';
-import Machine from '../Model/machineSchema';
-import User from '../Model/userSchema';
-import Log from '../Model/logSchema';
+import { Machine, Log } from '../modules/machine/machine.model';
+import User from '../modules/user/user.model';
 import { auth, allowRoles } from '../middleware/auth';
 // routes/operatorRoutes.js - UPDATED WITH VALID ENUM VALUES
 const router = Router();

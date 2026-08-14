@@ -1,9 +1,8 @@
 // @ts-nocheck
 import { Router, Response } from 'express';
-import Machine from '../Model/machineSchema';
-import User from '../Model/userSchema';
-import Log from '../Model/logSchema';
-import Payment from '../Model/paymentSchema';
+import { Machine, Log } from '../modules/machine/machine.model';
+import User from '../modules/user/user.model';
+import Payment from '../modules/payment/payment.model';
 import { auth, allowRoles } from '../middleware/auth';
 // routes/dealershipRoute.js
 const router = Router();
@@ -218,6 +217,7 @@ router.get("/machine/data", auth, allowRoles("dealership"), async (req: any, res
       machineData: {
         _id: machine._id,
         machineId: machine.machineId,
+        qrId: machine.qrId || "",
         location: machine.location,
         state: machine.state,
         country: machine.country,

@@ -1,5 +1,8 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
+/* ======================================================
+   1. PAYMENT SCHEMA
+====================================================== */
 export interface IPayment extends Document {
   paymentId: string;
   qrId?: string | null;
@@ -63,9 +66,46 @@ const paymentSchema = new Schema<IPayment>({
     default: Date.now,
     index: true
   }
-}, {
-  timestamps: true
+}, { timestamps: true });
+
+export const Payment: Model<IPayment> = mongoose.models.Payment || mongoose.model<IPayment>("Payment", paymentSchema);
+
+/* ======================================================
+   2. IDEMPOTENCY KEY SCHEMAS
+====================================================== */
+export interface IIdempotency extends Document {
+  key: string;
+  response: {
+    status: number;
+    body: any;
+  };
+  createdAt: Date;
+}
+
+const idempotencySchema = new Schema<IIdempotency>({
+  key: {
+    type: String,
+    required: true,
+    unique: true,
+    index: true
+  },
+  response: {
+    status: {
+      type: Number,
+      required: true
+    },
+    body: {
+      type: Schema.Types.Mixed,
+      required: true
+    }
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    expires: 86400 // TTL automatic deletion after 24 hours
+  }
 });
 
-const Payment: Model<IPayment> = mongoose.models.Payment || mongoose.model<IPayment>("Payment", paymentSchema);
+export const Idempotency: Model<IIdempotency> = mongoose.models.Idempotency || mongoose.model<IIdempotency>("Idempotency", idempotencySchema);
+
 export default Payment;

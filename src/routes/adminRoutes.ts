@@ -1,9 +1,8 @@
 // @ts-nocheck
 import { Router, Response } from 'express';
-import Machine from '../Model/machineSchema';
-import User from '../Model/userSchema';
-import Log from '../Model/logSchema';
-import Payment from '../Model/paymentSchema';
+import { Machine, Log } from '../modules/machine/machine.model';
+import User from '../modules/user/user.model';
+import Payment from '../modules/payment/payment.model';
 import { auth, allowRoles } from '../middleware/auth';
 const router = Router();
 
@@ -78,6 +77,7 @@ const getMachineRevenues = async (machineIds: string[]) => {
 const formatMachineResponse = (machine: any, logsMap: any = {}, totalRevenueMap: any = {}, monthlyRevenueMap: any = {}) => ({
   _id: machine._id.toString(),
   machineId: machine.machineId,
+  qrId: machine.qrId || "",
   location: machine.location,
   state: machine.state,
   country: machine.country,
@@ -86,6 +86,7 @@ const formatMachineResponse = (machine: any, logsMap: any = {}, totalRevenueMap:
   status: machine.status || "active",
   assignedTo: normalizeId(machine.assignedTo),
   dealership: normalizeId(machine.dealership),
+  operatorId: normalizeId(machine.operatorId),
   razorpayKeyId: machine.razorpayKeyId || "",
   razorpayKeySecret: machine.razorpayKeySecret || "",
   logs: logsMap[machine.machineId] || {},
@@ -97,10 +98,10 @@ const formatMachineResponse = (machine: any, logsMap: any = {}, totalRevenueMap:
 
 // Get machines by role
 const getMachinesByRole = async (user: any) => {
-  if (user.role === "admin") return await Machine.find();
-  if (user.role === "customer") return await Machine.find({ assignedTo: user.id });
+  if (user.role === "admin") return await Machine.find({ isDeleted: { $ne: true } });
+  if (user.role === "customer") return await Machine.find({ assignedTo: user.id, isDeleted: { $ne: true } });
   if (user.role === "dealership") {
-    return await Machine.find({ dealership: user.id });
+    return await Machine.find({ dealership: user.id, isDeleted: { $ne: true } });
   }
   return [];
 };
@@ -190,15 +191,12 @@ router.get("/machine/data", auth, allowRoles("admin", "customer", "dealership"),
   }
 });
 
-/* ======================================================
-   GET USERS
-====================================================== */
 router.get("/users", auth, allowRoles("admin", "dealership"), async (req: any, res: Response) => {
   try {
-    let query = {};
+    let query: any = { isDeleted: { $ne: true } };
 
     if (req.user.role === "dealership") {
-      query = { parent: req.user.id, role: "customer" };
+      query = { parent: req.user.id, role: "customer", isDeleted: { $ne: true } };
     }
 
     const users = await User.find(query)
@@ -229,14 +227,16 @@ router.get("/user/:id/available-machines", auth, allowRoles("admin"), async (req
     if (user.role === "dealership") {
       availableMachines = await Machine.find({
         dealership: null,
-        assignedTo: null
+        assignedTo: null,
+        isDeleted: { $ne: true }
       }).select("_id machineId location");
     }
 
     if (user.role === "customer") {
       availableMachines = await Machine.find({
         dealership: user.parent,
-        assignedTo: null
+        assignedTo: null,
+        isDeleted: { $ne: true }
       }).select("_id machineId location");
     }
 
@@ -255,7 +255,7 @@ router.get("/user/:id/available-machines", auth, allowRoles("admin"), async (req
 ====================================================== */
 router.post("/machine", auth, allowRoles("admin"), async (req: any, res: Response) => {
   try {
-    const { machineId, location, state, country, costPerTap, machineCost, status, razorpayKeyId, razorpayKeySecret } = req.body;
+    const { machineId, qrId, location, state, country, costPerTap, machineCost, status, razorpayKeyId, razorpayKeySecret } = req.body;
 
     if (!machineId || !location || !state) {
       return res.status(400).json({ message: "Missing fields" });
@@ -266,6 +266,7 @@ router.post("/machine", auth, allowRoles("admin"), async (req: any, res: Respons
 
     const machine = await Machine.create({
       machineId,
+      qrId: qrId || undefined,
       location,
       state,
       country: country || "India",
@@ -290,7 +291,7 @@ router.post("/machine", auth, allowRoles("admin"), async (req: any, res: Respons
 router.put("/machine/:id", auth, allowRoles("admin"), async (req: any, res: Response) => {
   try {
     const { id } = req.params;
-    const { machineId, location, state, country, costPerTap, machineCost, status, razorpayKeyId, razorpayKeySecret } = req.body;
+    const { machineId, qrId, location, state, country, costPerTap, machineCost, status, razorpayKeyId, razorpayKeySecret } = req.body;
 
     const machine = await Machine.findById(id);
     if (!machine) {
@@ -298,6 +299,7 @@ router.put("/machine/:id", auth, allowRoles("admin"), async (req: any, res: Resp
     }
 
     if (machineId) machine.machineId = machineId;
+    if (qrId !== undefined) machine.qrId = qrId;
     if (location !== undefined) machine.location = location;
     if (state !== undefined) machine.state = state;
     if (country !== undefined) machine.country = country;
@@ -403,18 +405,24 @@ router.get("/machine/:machineId/logs", auth, async (req: any, res: Response) => 
    CREATE USER
 ====================================================== */
 router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { name, email, phoneNumber , location , state, role, assignedMachineIds = [], razorpayKeyId, razorpayKeySecret } = req.body;
 
     // Validate role
     const validRoles = ["admin", "dealership", "operator", "customer"];
     if (!validRoles.includes(role)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ error: "Invalid role specified" });
     }
 
     // Check if phone number already exists
-    const existingUserByPhone = await User.findOne({ phoneNumber });
+    const existingUserByPhone = await User.findOne({ phoneNumber }).session(session);
     if (existingUserByPhone) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ 
         error: "DUPLICATE_PHONE_NUMBER",
         message: "This mobile number is already registered with another account"
@@ -422,8 +430,10 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
     }
 
     // Check if email already exists
-    const existingUserByEmail = await User.findOne({ email });
+    const existingUserByEmail = await User.findOne({ email }).session(session);
     if (existingUserByEmail) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ 
         error: "DUPLICATE_EMAIL",
         message: "This email is already registered with another account"
@@ -432,9 +442,11 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
 
     // Check if assigned machines exist and are available
     if (assignedMachineIds.length > 0) {
-      const machines = await Machine.find({ _id: { $in: assignedMachineIds } });
+      const machines = await Machine.find({ _id: { $in: assignedMachineIds } }).session(session);
       
       if (machines.length !== assignedMachineIds.length) {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({ 
           error: "INVALID_MACHINES",
           message: "Some machines do not exist in the system" 
@@ -444,6 +456,8 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
       // Check which machines are already assigned
       const alreadyAssigned = machines.filter(m => m.assignedTo !== null);
       if (alreadyAssigned.length > 0) {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({ 
           error: "MACHINES_ALREADY_ASSIGNED",
           message: "Some machines are already assigned to other users",
@@ -456,7 +470,7 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
     }
 
     // Create the user
-    const user = await User.create({
+    const [user] = await User.create([{
       name,
       email,
       phoneNumber,
@@ -467,11 +481,11 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
       assignedMachines: [],
       razorpayKeyId: razorpayKeyId || '',
       razorpayKeySecret: razorpayKeySecret || ''
-    });
+    }], { session });
 
     // Assign machines based on role
     if (assignedMachineIds.length > 0) {
-      const updateData = {};
+      const updateData: any = {};
       
       switch (role) {
         case "dealership":
@@ -488,13 +502,17 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
       if (Object.keys(updateData).length > 0) {
         await Machine.updateMany(
           { _id: { $in: assignedMachineIds } },
-          updateData
+          updateData,
+          { session }
         );
       }
       
       user.assignedMachines = assignedMachineIds;
-      await user.save();
+      await user.save({ session });
     }
+
+    await session.commitTransaction();
+    session.endSession();
 
     const populatedUser = await User.findById(user._id)
       .select("-password")
@@ -507,6 +525,9 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
     });
 
   } catch (err: any) {
+    await session.abortTransaction();
+    session.endSession();
+    
     if (err.code === 11000) {
       const field = Object.keys(err.keyPattern)[0];
       return res.status(400).json({ 
@@ -529,7 +550,7 @@ router.post("/createUser", auth, allowRoles("admin"), async (req: any, res: Resp
 router.put("/machine/:id", auth, allowRoles("admin"), async (req: any, res: Response) => {
   try {
     const { id } = req.params;
-    const { machineId, location, state, country, costPerTap, machineCost, status } = req.body;
+    const { machineId, qrId, location, state, country, costPerTap, machineCost, status } = req.body;
 
     const machine = await Machine.findById(id);
     if (!machine) {
@@ -544,6 +565,7 @@ router.put("/machine/:id", auth, allowRoles("admin"), async (req: any, res: Resp
     }
 
     machine.machineId = machineId || machine.machineId;
+    if (qrId !== undefined) machine.qrId = qrId;
     machine.location = location || machine.location;
     machine.state = state || machine.state;
     machine.country = country || machine.country;
@@ -691,10 +713,14 @@ router.put("/user/:id", auth, allowRoles("admin"), async (req: any, res: Respons
 
 
 router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
-    const user = await User.findById(req.params.id);
+    const user = await User.findById(req.params.id).session(session);
 
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ 
         error: "USER_NOT_FOUND",
         message: "User not found" 
@@ -703,14 +729,12 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
 
     // Track which machines will be affected for the response
     let affectedMachines = [];
-    let updateResult = {};
+    let updateResult: any = {};
 
     // Clear machine assignments based on user role
     if (user.role === "dealership") {
-      // Get affected machines
-      affectedMachines = await Machine.find({ dealership: user._id });
+      affectedMachines = await Machine.find({ dealership: user._id }).session(session);
       
-      // Clear ALL assignments for dealership's machines
       updateResult = await Machine.updateMany(
         { dealership: user._id },
         { 
@@ -719,14 +743,13 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
             assignedTo: null,
             operatorId: null
           }
-        }
+        },
+        { session }
       );
     } 
     else if (user.role === "customer") {
-      // Get affected machines
-      affectedMachines = await Machine.find({ assignedTo: user._id });
+      affectedMachines = await Machine.find({ assignedTo: user._id }).session(session);
       
-      // Clear assignments for customer's machines
       updateResult = await Machine.updateMany(
         { assignedTo: user._id },
         { 
@@ -734,32 +757,31 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
             assignedTo: null,
             operatorId: null
           }
-        }
+        },
+        { session }
       );
     }
     else if (user.role === "operator") {
-      // Get affected machines
-      affectedMachines = await Machine.find({ operatorId: user._id });
+      affectedMachines = await Machine.find({ operatorId: user._id }).session(session);
       
-      // Clear operator assignment
       updateResult = await Machine.updateMany(
         { operatorId: user._id },
         { 
           $set: { 
             operatorId: null
           }
-        }
+        },
+        { session }
       );
     }
     else if (user.role === "admin") {
-      // Admins usually don't have machines assigned, but just in case
       affectedMachines = await Machine.find({ 
         $or: [
           { dealership: user._id },
           { assignedTo: user._id },
           { operatorId: user._id }
         ]
-      });
+      }).session(session);
       
       updateResult = await Machine.updateMany(
         { 
@@ -775,12 +797,12 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
             assignedTo: null,
             operatorId: null
           }
-        }
+        },
+        { session }
       );
     }
     else {
-      // Fallback for any other roles
-      affectedMachines = await Machine.find({ assignedTo: user._id });
+      affectedMachines = await Machine.find({ assignedTo: user._id }).session(session);
       
       updateResult = await Machine.updateMany(
         { assignedTo: user._id },
@@ -790,16 +812,20 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
             operatorId: null,
             dealership: null
           }
-        }
+        },
+        { session }
       );
     }
 
-    // Also clean up any references in the user's assignedMachines array
-    // This ensures the user document is clean before deletion
+    // Clear user assignments and mark as deleted
     user.assignedMachines = [];
-    await user.save();
+    user.isDeleted = true;
+    user.deletedAt = new Date();
+    await user.save({ session });
 
-    // Store user data for response before deletion
+    await session.commitTransaction();
+    session.endSession();
+
     const userData = {
       id: user._id,
       name: user.name,
@@ -808,11 +834,7 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
       phoneNumber: user.phoneNumber
     };
 
-    // Delete the user
-    await user.deleteOne();
-
-    // Log the deletion for audit purposes
-    console.log(`User deleted by ${req.user.id}:`, {
+    console.log(`User soft-deleted by ${req.user.id}:`, {
       deletedUser: userData,
       affectedMachines: affectedMachines.length,
       machinesUpdated: updateResult.modifiedCount || 0,
@@ -821,7 +843,7 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
 
     res.json({
       success: true,
-      message: "User deleted successfully. All machine references cleared.",
+      message: "User soft-deleted successfully. All machine references cleared.",
       data: {
         deletedUser: userData,
         machinesAffected: affectedMachines.map((m: any) => ({
@@ -834,7 +856,9 @@ router.delete("/user/:id", auth, allowRoles("admin"), async (req: any, res: Resp
     });
 
   } catch (err: any) {
-    console.error("Error deleting user:", err);
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Error soft-deleting user:", err);
     res.status(500).json({ 
       error: "INTERNAL_SERVER_ERROR",
       message: err.message 
@@ -985,6 +1009,188 @@ router.get("/payments/history", auth, allowRoles("admin", "dealership", "custome
 
   } catch (err: any) {
     console.error("Error fetching payment history:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   DELETE MACHINE (SOFT DELETE)
+====================================================== */
+router.delete("/machine/:id", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { id } = req.params;
+    const machine = await Machine.findById(id).session(session);
+    if (!machine) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: "Machine not found" });
+    }
+
+    // Clear references in users (dealership, assignedTo/customer, operatorId)
+    if (machine.dealership) {
+      await User.updateOne(
+        { _id: machine.dealership },
+        { $pull: { assignedMachines: machine._id } },
+        { session }
+      );
+    }
+    if (machine.assignedTo) {
+      await User.updateOne(
+        { _id: machine.assignedTo },
+        { $pull: { assignedMachines: machine._id } },
+        { session }
+      );
+    }
+    if (machine.operatorId) {
+      await User.updateOne(
+        { _id: machine.operatorId },
+        { $pull: { assignedMachines: machine._id } },
+        { session }
+      );
+    }
+
+    machine.isDeleted = true;
+    machine.deletedAt = new Date();
+    machine.dealership = null;
+    machine.assignedTo = null;
+    machine.operatorId = null;
+    await machine.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json({
+      success: true,
+      message: "Machine soft-deleted successfully",
+      machine
+    });
+  } catch (err: any) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Error soft-deleting machine:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   GET ALL TRASHED ENTITIES (ADMIN ONLY)
+====================================================== */
+router.get("/trash", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  try {
+    const deletedUsers = await User.find({ isDeleted: true }).select("-password -refreshToken");
+    const deletedMachines = await Machine.find({ isDeleted: true });
+
+    res.json({
+      success: true,
+      users: deletedUsers,
+      machines: deletedMachines
+    });
+  } catch (err: any) {
+    console.error("Error fetching trashed entities:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   RESTORE ENTITY FROM TRASH (ADMIN ONLY)
+====================================================== */
+router.post("/trash/:id/restore", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { id } = req.params;
+    const { type } = req.body; // "user" or "machine"
+
+    if (!type || !["user", "machine"].includes(type)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Invalid or missing entity type. Must be 'user' or 'machine'." });
+    }
+
+    if (type === "user") {
+      const user = await User.findById(id).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ message: "User not found" });
+      }
+      user.isDeleted = false;
+      user.deletedAt = null;
+      await user.save({ session });
+
+      await session.commitTransaction();
+      session.endSession();
+      return res.json({ success: true, message: "User restored successfully", user });
+    } else {
+      const machine = await Machine.findById(id).session(session);
+      if (!machine) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ message: "Machine not found" });
+      }
+      machine.isDeleted = false;
+      machine.deletedAt = null;
+      await machine.save({ session });
+
+      await session.commitTransaction();
+      session.endSession();
+      return res.json({ success: true, message: "Machine restored successfully", machine });
+    }
+  } catch (err: any) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Error restoring entity:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================================================
+   HARD DELETE ENTITY PERMANENTLY (ADMIN ONLY)
+====================================================== */
+router.delete("/trash/:id/hard-delete", auth, allowRoles("admin"), async (req: any, res: Response) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { id } = req.params;
+    const { type } = req.body; // "user" or "machine"
+
+    if (!type || !["user", "machine"].includes(type)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Invalid or missing entity type. Must be 'user' or 'machine'." });
+    }
+
+    if (type === "user") {
+      const user = await User.findById(id).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      await user.deleteOne({ session });
+      await session.commitTransaction();
+      session.endSession();
+      return res.json({ success: true, message: "User permanently deleted." });
+    } else {
+      const machine = await Machine.findById(id).session(session);
+      if (!machine) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ message: "Machine not found" });
+      }
+
+      await machine.deleteOne({ session });
+      await session.commitTransaction();
+      session.endSession();
+      return res.json({ success: true, message: "Machine permanently deleted." });
+    }
+  } catch (err: any) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Error hard-deleting entity:", err);
     res.status(500).json({ error: err.message });
   }
 });
