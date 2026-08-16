@@ -50,4 +50,14 @@ export class ReportService {
 
     return await report.markAsSolved(resolutionNotes);
   }
+
+  /**
+   * Delete a support ticket.
+   */
+  static async deleteReport(reportId: string) {
+    const report = await Report.findOne({ reportId });
+    if (!report) throw new Error('Report ticket not found');
+    await report.deleteOne();
+    return report;
+  }
 }

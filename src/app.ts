@@ -26,6 +26,8 @@ import userModuleRouter, { dealershipUserRouter, customerUserRouter } from './mo
 import { adminMachineRouter, userMachineRouter, refillMachineRouter, operatorMachineRouter, dealershipMachineRouter, customerMachineRouter } from './modules/machine/machine.routes';
 import { adminPaymentRouter, apiPaymentRouter } from './modules/payment/payment.routes';
 import { adminReportRouter, customerReportRouter } from './modules/report/report.routes';
+import otaRouter from './modules/ota/ota.routes';
+import path from 'path';
 
 dotenv.config();
 
@@ -257,6 +259,8 @@ app.delete('/api/admin/delete-vendor/:uid', requireAuth, requireAdmin, async (re
 });
 
 // Mount modular routes
+app.use('/', otaRouter);
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.use('/user', userModuleRouter);
 app.use('/user', userMachineRouter);
 app.use('/admin', adminMachineRouter);

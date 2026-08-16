@@ -67,4 +67,17 @@ export class ReportController {
       res.status(500).json({ error: err.message });
     }
   }
+
+  /**
+   * Delete a support ticket.
+   */
+  static async deleteReport(req: any, res: Response) {
+    try {
+      const { reportId } = req.params;
+      const report = await ReportService.deleteReport(reportId);
+      res.json({ success: true, message: 'Support ticket deleted successfully', report });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
 }
