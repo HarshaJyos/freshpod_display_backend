@@ -47,12 +47,16 @@ export class PaymentService {
 
     const formattedPayments = payments.map((payment: any) => {
       const amt = payment.amount || 0;
-      totalAmount += amt;
 
-      if (payment.method === 'Razorpay') {
-        razorpayAmount += amt;
-      } else {
-        mqttAmount += amt;
+      // Only count successfully completed payments towards revenue summaries
+      if (payment.status === 'paid') {
+        totalAmount += amt;
+
+        if (payment.method === 'Razorpay') {
+          razorpayAmount += amt;
+        } else {
+          mqttAmount += amt;
+        }
       }
 
       const formatted: any = {
