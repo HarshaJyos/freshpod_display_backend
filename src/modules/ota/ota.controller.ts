@@ -1,9 +1,12 @@
 import { Request, Response } from 'express';
 import { Firmware } from './firmware.model';
+import { Machine } from '../machine/machine.model';
+import { clearMachineLinkCache } from '../payment/payment.controller';
 import { v2 as cloudinary } from 'cloudinary';
 import streamifier from 'streamifier';
 import fs from 'fs';
 import path from 'path';
+import mqttService from '../../services/mqttService';
 
 // Configure Cloudinary
 cloudinary.config({
@@ -19,6 +22,20 @@ function incrementVersion(version: string): string {
   }
   parts[2] += 1;
   return parts.join('.');
+}
+
+// Map qrvalue index (0-6) to INR amount
+function getAmountFromQrValue(qrValue: number): number {
+  const amountMap: { [key: number]: number } = {
+    0: 49,
+    1: 59,
+    2: 69,
+    3: 79,
+    4: 89,
+    5: 99,
+    6: 109
+  };
+  return amountMap[qrValue] ?? 49;
 }
 
 function getQrValueFromAmount(amount: string): number {
@@ -157,12 +174,29 @@ export class OtaController {
         { qrvalue: qrValueNum },
         { sort: { createdAt: -1 }, new: true }
       );
-      
+
+      // ── CRITICAL: sync the amount to Machine.costPerTap ──────────────
+      // payment.controller.ts reads costPerTap from Machine (not Firmware)
+      // so we must update it here or the new QR will have the wrong price.
+      const amountINR = getAmountFromQrValue(qrValueNum);
+      await Machine.updateOne(
+        { machineId },
+        { $set: { costPerTap: amountINR } }
+      );
+
+      // Evict the stale Razorpay payment link cache for this machine
+      clearMachineLinkCache(machineId);
+
+      // Push real-time config to the ESP32 over MQTT (no OTA reflash needed).
+      // The ESP32 will set a flag to regenerate the QR on the next cycle.
+      mqttService.pushConfigUpdate(machineId, amountINR);
+
       return res.json({
         success: true,
-        message: 'QR value updated successfully',
+        message: 'QR value updated successfully. Machine.costPerTap synced. ESP32 config pushed via MQTT.',
         machineId: machineId,
         newQrValue: qrValueNum,
+        amount: amountINR,
         updatedAt: new Date()
       });
       
@@ -212,7 +246,18 @@ export class OtaController {
         updateData,
         { sort: { createdAt: -1 }, new: true }
       );
-      
+
+      // If amount changed, sync to Machine.costPerTap + clear cache + push MQTT
+      if (updateData.qrvalue !== undefined) {
+        const amountINR = getAmountFromQrValue(updateData.qrvalue);
+        await Machine.updateOne(
+          { machineId },
+          { $set: { costPerTap: amountINR } }
+        );
+        clearMachineLinkCache(machineId);
+        mqttService.pushConfigUpdate(machineId, amountINR);
+      }
+
       return res.json({
         success: true,
         message: 'Machine information updated successfully',
@@ -382,6 +427,7 @@ export class OtaController {
         version: latest.version,
         url: latest.file.url,
         qrvalue: latest.qrvalue,
+        amount: getAmountFromQrValue(latest.qrvalue),
       });
       
     } catch (err: any) {

@@ -8,7 +8,7 @@ export interface IPayment extends Document {
   qrId?: string | null;
   machineId: string;
   amount: number;
-  method: 'Razorpay' | 'MQTT';
+  method: 'Razorpay' | 'MQTT' | 'RFID' | 'Operator';
   status: 'pending' | 'paid' | 'failed';
   customerName?: string | null;
   customerEmail?: string | null;
@@ -39,7 +39,7 @@ const paymentSchema = new Schema<IPayment>({
   },
   method: {
     type: String,
-    enum: ['Razorpay', 'MQTT'],
+    enum: ['Razorpay', 'MQTT', 'RFID', 'Operator'],
     required: true,
     index: true
   },

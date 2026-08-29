@@ -6,9 +6,22 @@ import User from '../user/user.model';
 import { getFirestore } from 'firebase-admin/firestore';
 import Razorpay from 'razorpay';
 import mongoose from 'mongoose';
+import mqttService from '../../services/mqttService';
 
 // Cache to hold active links to avoid rate limits
 const linkCache = new Map<string, { id: string; short_url: string; amount: number; machineId: string }>();
+
+/**
+ * Evict a machine's cached Razorpay payment link.
+ * Must be called whenever the machine's costPerTap changes so the next
+ * requestNewPayment() call creates a fresh link at the correct amount.
+ */
+export function clearMachineLinkCache(machineId: string): void {
+  if (linkCache.has(machineId)) {
+    linkCache.delete(machineId);
+    console.log(`[PAYMENT] Evicted cached payment link for machine ${machineId} (price changed)`);
+  }
+}
 
 interface MachineConfig {
   machineId: string;
@@ -203,9 +216,14 @@ export class PaymentController {
 
     if (machineId === 'default') {
       try {
-        const pendingPayment = await Payment.findOne({ qrId: qr_id });
+        // Try by qrId first, then paymentId (same value, belt-and-suspenders for restart case)
+        const pendingPayment = await Payment.findOne({
+          $or: [{ qrId: qr_id }, { paymentId: qr_id }],
+          machineId: { $ne: 'default' }
+        });
         if (pendingPayment) {
           machineId = pendingPayment.machineId;
+          console.log(`[PAYMENT] Resolved machineId '${machineId}' from DB (cache was cold)`);
         }
       } catch (err: any) {
         console.error('[DB] Error looking up pending payment:', err.message);
@@ -263,8 +281,7 @@ export class PaymentController {
           { upsert: true, new: true }
         );
 
-        if ((global as any).broadcastLiveEvent) {
-          (global as any).broadcastLiveEvent('PAYMENT_UPDATE', {
+        mqttService.broadcastDashboardEvent('PAYMENT_UPDATE', {
             machineId: String(actualMachineId),
             qrId: qr_id,
             amount: Number(paymentLink.amount) / 100,
@@ -272,7 +289,6 @@ export class PaymentController {
             status: 'paid',
             timestamp: new Date()
           });
-        }
       } else if (paymentLink.status === 'expired' || paymentLink.status === 'cancelled') {
         status = 'failed';
       }
@@ -357,8 +373,7 @@ export class PaymentController {
           { upsert: true, new: true }
         );
 
-        if ((global as any).broadcastLiveEvent) {
-          (global as any).broadcastLiveEvent('PAYMENT_UPDATE', {
+        mqttService.broadcastDashboardEvent('PAYMENT_UPDATE', {
             machineId: actualMachineId,
             qrId: qr_id,
             amount: Number(paymentLink.amount) / 100,
@@ -366,7 +381,6 @@ export class PaymentController {
             status: 'paid',
             timestamp: new Date()
           });
-        }
 
         return res.json({ success: true, status: 'paid', message: 'Payment link successfully verified and recorded.' });
       }

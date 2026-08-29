@@ -19,7 +19,7 @@ import { getAuth } from 'firebase-admin/auth';
 // Database sync utilities
 import connectDB from './db/connect';
 import startSync from './init/sync';
-import mqttService from './services/mqttService';
+import mqttService, { registerSSEClient, unregisterSSEClient } from './services/mqttService';
 
 // Modular routes
 import userModuleRouter, { dealershipUserRouter, customerUserRouter } from './modules/user/user.routes';
@@ -33,9 +33,15 @@ dotenv.config();
 
 const app = express();
 
+import { MachineController } from './modules/machine/machine.controller';
+
+// Link MQTT completion callback to MachineController's session cleaner
+mqttService.registerSessionCompletedCallback((machineId) => {
+  MachineController.clearActiveSession(machineId);
+});
+
 // Initialize MQTT Connection
 mqttService.connect();
-app.set('mqttClient', mqttService.client);
 
 // Initialize Firebase Admin SDK
 if (getApps().length === 0) {
@@ -175,6 +181,40 @@ const requireAdmin = (req: AuthenticatedRequest, res: Response, next: NextFuncti
 // Root Status
 app.get('/', (req: Request, res: Response) => {
   res.json({ status: 'active', version: '2.1.0', service: 'FreshPod Dynamic Multi-Tenant API' });
+});
+
+// ─────────────────────────────────────────────────────────────────
+//  SSE LIVE EVENTS — replaces WebSocket
+//  Dashboard browsers connect here to receive real-time updates
+//  (payments, telemetry) relayed from MQTT pub/sub.
+// ─────────────────────────────────────────────────────────────────
+app.get('/api/events', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Send an initial heartbeat so the browser knows it's connected
+  res.write(`data: ${JSON.stringify({ type: 'CONNECTED', message: 'SSE stream active' })}\n\n`);
+
+  // Register this response stream so mqttService can write to it
+  registerSSEClient(res);
+
+  // Heartbeat every 30 s to keep the connection alive through proxies
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch (_) {
+      clearInterval(heartbeat);
+    }
+  }, 30000);
+
+  // Clean up when the browser disconnects
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    unregisterSSEClient(res);
+  });
 });
 
 // Legacy Admin create vendor Firebase Auth

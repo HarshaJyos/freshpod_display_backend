@@ -289,6 +289,11 @@ export class MachineController {
   // Active sessions cache for tracking live disinfection cycles
   private static activeSessions = new Map<string, any>();
 
+  public static clearActiveSession(machineId: string) {
+    MachineController.activeSessions.delete(machineId);
+    console.log(`[SESSION] Cleared operator active sessions cache for ${machineId}`);
+  }
+
   /* ======================================================
      1. OPERATOR FEATURE ENDPOINTS
   ====================================================== */
@@ -308,16 +313,15 @@ export class MachineController {
       const operatorId = req.user.id;
       if (!machineId) return res.status(400).json({ success: false, message: "Machine ID is required" });
 
-      const mqttClient = req.app.get('mqttClient');
-      if (!mqttClient || !mqttClient.connected) {
-        return res.status(503).json({ success: false, message: 'MQTT service not available' });
-      }
-
       const machine = await Machine.findOne({ _id: machineId, operatorId, isDeleted: { $ne: true } });
       if (!machine) return res.status(404).json({ success: false, message: "Machine not found or not assigned" });
 
       if (MachineController.activeSessions.has(machineId)) {
         return res.status(400).json({ success: false, message: "Machine is already cleaning" });
+      }
+
+      if (!mqttService.isConnected || !mqttService.client) {
+        return res.status(503).json({ success: false, message: 'MQTT service not available' });
       }
 
       const topic = `freshpod_vending_2025/${machine.machineId}`;
@@ -328,7 +332,7 @@ export class MachineController {
         timestamp: Date.now()
       });
 
-      mqttClient.publish(topic, message, { qos: 1 }, async (err: any) => {
+      mqttService.client.publish(topic, message, { qos: 1 }, async (err: any) => {
         if (err) {
           return res.status(500).json({ success: false, message: 'Failed to send MQTT command' });
         }
@@ -368,7 +372,7 @@ export class MachineController {
             paymentId,
             machineId: machine.machineId,
             amount: machine.costPerTap || 0.50,
-            method: 'MQTT',
+            method: 'Operator',
             status: 'paid',
             customerName: 'Operator Run',
             customerEmail: 'N/A',
@@ -379,22 +383,20 @@ export class MachineController {
           console.error('[DB] Failed to auto-create payment log entry:', payErr.message);
         }
 
-        if ((global as any).broadcastLiveEvent) {
-          (global as any).broadcastLiveEvent('TELEMETRY_UPDATE', {
+        mqttService.broadcastDashboardEvent('TELEMETRY_UPDATE', {
             machineId: machine.machineId,
             totalTaps: machine.totalTaps,
             status: machine.status,
             lastTap: log
           });
-          (global as any).broadcastLiveEvent('PAYMENT_UPDATE', {
+          mqttService.broadcastDashboardEvent('PAYMENT_UPDATE', {
             paymentId,
             machineId: machine.machineId,
             amount: machine.costPerTap || 0.50,
-            method: 'MQTT',
+            method: 'Operator',
             status: 'paid',
             timestamp: new Date()
           });
-        }
 
         res.json({ success: true, message: "Start command sent successfully" });
       });
@@ -666,9 +668,84 @@ export class MachineController {
 
   static async getCustomerMachines(req: any, res: Response) {
     try {
-      const machines = await Machine.find({ assignedTo: req.user.id, isDeleted: { $ne: true } });
-      res.json(machines);
+      const customerId = req.user.id;
+      const machines = await Machine.find({ assignedTo: customerId, isDeleted: { $ne: true } }).lean();
+      
+      const currentDate = new Date();
+      const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+      const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59);
+
+      const formatted = [];
+      for (const machine of machines) {
+        // 1. Fetch settings (rent, maintenance)
+        const settings = await CustomerMachineSettings.findOne({ customerId, machineId: machine._id }).lean();
+
+        // 2. Fetch monthly taps from Log
+        const monthlyTapsResult = await Log.aggregate([
+          {
+            $match: {
+              machineId: machine.machineId,
+              action: 'TAP_DISPENSED',
+              timestamp: { $gte: startOfMonth, $lte: endOfMonth }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$tapCount' }
+            }
+          }
+        ]);
+        const monthlyTaps = monthlyTapsResult.length > 0 ? monthlyTapsResult[0].total : 0;
+
+        // 3. Fetch monthly revenue from Payment
+        const monthlyRevenueResult = await Payment.aggregate([
+          {
+            $match: {
+              machineId: machine.machineId,
+              status: 'paid',
+              timestamp: { $gte: startOfMonth, $lte: endOfMonth }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$amount' }
+            }
+          }
+        ]);
+        const monthlyRevenue = monthlyRevenueResult.length > 0 ? monthlyRevenueResult[0].total : 0;
+
+        // 4. Fetch lifetime revenue from Payment
+        const totalRevenueResult = await Payment.aggregate([
+          {
+            $match: {
+              machineId: machine.machineId,
+              status: 'paid'
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$amount' }
+            }
+          }
+        ]);
+        const totalRevenue = totalRevenueResult.length > 0 ? totalRevenueResult[0].total : 0;
+
+        formatted.push({
+          ...machine,
+          rentPerMonth: settings?.rentPerMonth || 0,
+          maintenanceCostPerMonth: settings?.maintenanceCostPerMonth || 0,
+          monthlyTaps,
+          monthlyRevenue,
+          totalRevenue
+        });
+      }
+
+      res.json(formatted);
     } catch (err: any) {
+      console.error("Error in getCustomerMachines:", err);
       res.status(500).json({ error: err.message });
     }
   }

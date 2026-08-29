@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Machine, Log, SanitizationRefill, CustomerMachineSettings } from './machine.model';
 import User from '../user/user.model';
 import { Payment } from '../payment/payment.model';
+import mqttService from '../../services/mqttService';
 
 export class MachineService {
 
@@ -115,9 +116,9 @@ export class MachineService {
         paymentId,
         machineId: machine.machineId,
         amount: finalAmount,
-        method: initiatedBy ? 'MQTT' : 'MQTT', // Can be classified as RFID or Operator
+        method: initiatedBy ? 'Operator' : 'RFID',
         status: 'paid',
-        customerName: initiatedBy ? 'Operator Run' : 'RFID/Telemetry Tap',
+        customerName: initiatedBy ? 'Operator Run' : 'RFID Tap',
         customerEmail: 'N/A',
         customerPhone: 'N/A',
         timestamp: new Date()
@@ -126,23 +127,21 @@ export class MachineService {
       console.error('[DB] Failed to auto-create payment log entry:', payErr.message);
     }
 
-    // Broadcast WS updates globally
-    if ((global as any).broadcastLiveEvent) {
-      (global as any).broadcastLiveEvent('TELEMETRY_UPDATE', {
-        machineId: machine.machineId,
-        totalTaps: machine.totalTaps,
-        status: machine.status,
-        lastTap: log
-      });
-      (global as any).broadcastLiveEvent('PAYMENT_UPDATE', {
-        paymentId,
-        machineId: machine.machineId,
-        amount: finalAmount,
-        method: 'MQTT',
-        status: 'paid',
-        timestamp: new Date()
-      });
-    }
+    // Broadcast live events via MQTT → SSE
+    mqttService.broadcastDashboardEvent('TELEMETRY_UPDATE', {
+      machineId: machine.machineId,
+      totalTaps: machine.totalTaps,
+      status: machine.status,
+      lastTap: log
+    });
+    mqttService.broadcastDashboardEvent('PAYMENT_UPDATE', {
+      paymentId,
+      machineId: machine.machineId,
+      amount: finalAmount,
+      method: 'MQTT',
+      status: 'paid',
+      timestamp: new Date()
+    });
 
     return { log, machine };
   }

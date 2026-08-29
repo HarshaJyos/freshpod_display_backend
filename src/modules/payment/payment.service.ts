@@ -49,10 +49,10 @@ export class PaymentService {
       const amt = payment.amount || 0;
       totalAmount += amt;
 
-      if (payment.method === 'MQTT') {
-        mqttAmount += amt;
-      } else if (payment.method === 'Razorpay') {
+      if (payment.method === 'Razorpay') {
         razorpayAmount += amt;
+      } else {
+        mqttAmount += amt;
       }
 
       const formatted: any = {
