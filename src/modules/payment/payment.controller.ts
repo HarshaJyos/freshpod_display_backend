@@ -55,6 +55,8 @@ export class PaymentController {
     let actualMachineId = machineId;
 
     // 1. Read machine details from MongoDB
+    // Track if MongoDB successfully provided an amount so Firestore cannot overwrite it
+    let mongoAmountSet = false;
     try {
       let query: any = { machineId };
       if (mongoose.Types.ObjectId.isValid(machineId)) {
@@ -77,14 +79,20 @@ export class PaymentController {
 
         config.razorpayKeyId = mongoMachine.razorpayKeyId || config.razorpayKeyId;
         config.razorpayKeySecret = mongoMachine.razorpayKeySecret || config.razorpayKeySecret;
-        config.amount = mongoMachine.costPerTap || config.amount;
         config.location = mongoMachine.location || config.location;
+
+        // costPerTap from MongoDB is the source of truth — mark it so Firestore cannot override
+        if (mongoMachine.costPerTap) {
+          config.amount = mongoMachine.costPerTap;
+          mongoAmountSet = true;
+        }
       }
     } catch (err: any) {
       console.error(`[DB] Error fetching MongoDB machine config for ${machineId}:`, err.message);
     }
 
-    // 2. Fallback to Firebase Firestore machine doc
+    // 2. Fallback to Firebase Firestore machine doc (legacy)
+    // Only use Firestore's amount if MongoDB did NOT already set one via costPerTap
     try {
       const db = getFirestore();
       const machineDoc = await db.collection('machines').doc(actualMachineId).get();
@@ -92,7 +100,10 @@ export class PaymentController {
         const data = machineDoc.data();
         if (data) {
           config.vendorUid = data.vendorUid || config.vendorUid;
-          config.amount = data.amount !== undefined ? Number(data.amount) : config.amount;
+          // Never overwrite MongoDB costPerTap with legacy Firestore amount
+          if (!mongoAmountSet && data.amount !== undefined) {
+            config.amount = Number(data.amount);
+          }
           config.location = data.location || config.location;
           config.razorpayKeyId = data.razorpayKeyId || config.razorpayKeyId;
           config.razorpayKeySecret = data.razorpayKeySecret || config.razorpayKeySecret;
