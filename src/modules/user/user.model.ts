@@ -82,7 +82,8 @@ const userSchema = new Schema<IUser>({
   },
   razorpayKeySecret: {
     type: String,
-    default: ""
+    default: "",
+    select: false
   },
   isDeleted: {
     type: Boolean,

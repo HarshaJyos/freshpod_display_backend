@@ -62,14 +62,14 @@ export class PaymentController {
       if (mongoose.Types.ObjectId.isValid(machineId)) {
         query = { $or: [{ _id: machineId }, { machineId }] };
       }
-      const mongoMachine = await Machine.findOne(query);
+      const mongoMachine = await Machine.findOne(query).select("+razorpayKeySecret +razorpayKeyId");
       if (mongoMachine) {
         actualMachineId = mongoMachine.machineId;
         config.machineId = actualMachineId;
 
         const userId = mongoMachine.assignedTo || mongoMachine.dealership || mongoMachine.operatorId;
         if (userId) {
-          const mongoUser = await User.findById(userId);
+          const mongoUser = await User.findById(userId).select("+razorpayKeySecret +razorpayKeyId");
           if (mongoUser) {
             resolvedUserId = mongoUser._id.toString();
             resolvedUserKeyId = mongoUser.razorpayKeyId || '';
@@ -111,7 +111,7 @@ export class PaymentController {
           if (!resolvedUserKeyId && config.vendorUid) {
             const firebaseLinkedUser = await User.findOne({
               $or: [{ _id: config.vendorUid }, { email: config.vendorUid }]
-            });
+            }).select("+razorpayKeySecret +razorpayKeyId");
             if (firebaseLinkedUser) {
               resolvedUserKeyId = firebaseLinkedUser.razorpayKeyId || '';
               resolvedUserKeySecret = firebaseLinkedUser.razorpayKeySecret || '';

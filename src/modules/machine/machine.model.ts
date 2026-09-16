@@ -74,7 +74,8 @@ const machineSchema = new Schema<IMachine>({
   },
   razorpayKeySecret: {
     type: String,
-    default: ""
+    default: "",
+    select: false
   },
   isDeleted: {
     type: Boolean,

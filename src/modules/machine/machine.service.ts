@@ -55,14 +55,14 @@ export class MachineService {
           machineId,
           _id: { $in: dealership.assignedMachines || [] },
           isDeleted: { $ne: true }
-        }).populate('assignedTo', 'name email phoneNumber');
+        }).select('-razorpayKeyId -razorpayKeySecret').populate('assignedTo', 'name email phoneNumber');
       }
     } else if (role === 'customer') {
       machine = await Machine.findOne({
         machineId,
         assignedTo: userId,
         isDeleted: { $ne: true }
-      });
+      }).select('-razorpayKeyId -razorpayKeySecret');
     }
 
     if (!machine) return null;

@@ -123,7 +123,9 @@ export class UserController {
       if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
       if (location !== undefined) user.location = location;
       if (razorpayKeyId !== undefined) user.razorpayKeyId = razorpayKeyId;
-      if (razorpayKeySecret !== undefined) user.razorpayKeySecret = razorpayKeySecret;
+      if (razorpayKeySecret !== undefined && razorpayKeySecret.trim() !== '') {
+        user.razorpayKeySecret = razorpayKeySecret.trim();
+      }
 
       await user.save();
 
@@ -135,8 +137,7 @@ export class UserController {
           email: user.email,
           phoneNumber: user.phoneNumber,
           location: user.location,
-          razorpayKeyId: user.razorpayKeyId,
-          razorpayKeySecret: user.razorpayKeySecret
+          razorpayKeyId: user.razorpayKeyId
         }
       });
     } catch (err: any) {
@@ -154,9 +155,20 @@ export class UserController {
         query = { parent: req.user.id, role: "customer", isDeleted: { $ne: true } };
       }
 
-      const users = await User.find(query)
+      let users: any = await User.find(query)
         .select("-password -refreshToken")
         .populate("assignedMachines", "machineId location status");
+
+      // If requester is not admin, strip other users' razorpayKeyId
+      if (req.user.role !== "admin") {
+        users = users.map((u: any) => {
+          const uObj = u.toObject ? u.toObject() : { ...u };
+          if (uObj._id.toString() !== req.user.id.toString()) {
+            delete uObj.razorpayKeyId;
+          }
+          return uObj;
+        });
+      }
 
       res.json(users);
     } catch (err: any) {
@@ -269,13 +281,15 @@ export class UserController {
       if (location !== undefined) user.location = location;
       if (state !== undefined) user.state = state;
       if (razorpayKeyId !== undefined) user.razorpayKeyId = razorpayKeyId;
-      if (razorpayKeySecret !== undefined) user.razorpayKeySecret = razorpayKeySecret;
+      if (razorpayKeySecret !== undefined && razorpayKeySecret.trim() !== '') {
+        user.razorpayKeySecret = razorpayKeySecret.trim();
+      }
       
       user.assignedMachines = assignedMachineIds;
       await user.save();
 
       const populated = await User.findById(user._id)
-        .select("-password")
+        .select("-password -refreshToken")
         .populate('assignedMachines', 'machineId location status totalTaps');
 
       res.json({

@@ -124,7 +124,7 @@ export class MachineController {
    */
   static async createMachine(req: any, res: Response) {
     try {
-      const { machineId, location, costPerTap, qrId } = req.body;
+      const { machineId, location, costPerTap, qrId, razorpayKeyId, razorpayKeySecret } = req.body;
       if (!machineId || !location || costPerTap === undefined) {
         return res.status(400).json({ error: "Missing required parameters" });
       }
@@ -144,10 +144,15 @@ export class MachineController {
         costPerTap,
         qrId: qrId || undefined,
         totalTaps: 0,
-        status: "active"
+        status: "active",
+        razorpayKeyId: razorpayKeyId || "",
+        razorpayKeySecret: (razorpayKeySecret && razorpayKeySecret.trim() !== '') ? razorpayKeySecret.trim() : ""
       });
 
-      res.status(201).json({ success: true, message: "Machine registered successfully", machine });
+      const cleanMachine = machine.toObject();
+      delete (cleanMachine as any).razorpayKeySecret;
+
+      res.status(201).json({ success: true, message: "Machine registered successfully", machine: cleanMachine });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -159,7 +164,7 @@ export class MachineController {
   static async updateMachine(req: any, res: Response) {
     try {
       const { id } = req.params;
-      const { location, costPerTap, status, qrId } = req.body;
+      const { location, costPerTap, status, qrId, razorpayKeyId, razorpayKeySecret } = req.body;
 
       const machine = await Machine.findById(id);
       if (!machine) return res.status(404).json({ error: "Machine not found" });
@@ -173,10 +178,17 @@ export class MachineController {
       if (costPerTap !== undefined) machine.costPerTap = costPerTap;
       if (status !== undefined) machine.status = status;
       if (qrId !== undefined) machine.qrId = qrId || undefined;
+      if (razorpayKeyId !== undefined) machine.razorpayKeyId = razorpayKeyId;
+      if (razorpayKeySecret !== undefined && razorpayKeySecret.trim() !== '') {
+        machine.razorpayKeySecret = razorpayKeySecret.trim();
+      }
 
       await machine.save();
 
-      res.json({ success: true, message: "Machine configuration updated successfully", machine });
+      const cleanMachine = machine.toObject();
+      delete (cleanMachine as any).razorpayKeySecret;
+
+      res.json({ success: true, message: "Machine configuration updated successfully", machine: cleanMachine });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -300,7 +312,8 @@ export class MachineController {
 
   static async getOperatorMachines(req: any, res: Response) {
     try {
-      const machines = await Machine.find({ operatorId: req.user.id, isDeleted: { $ne: true } });
+      const machines = await Machine.find({ operatorId: req.user.id, isDeleted: { $ne: true } })
+        .select("-razorpayKeyId -razorpayKeySecret");
       res.json(machines);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -515,6 +528,7 @@ export class MachineController {
   static async getDealershipMachines(req: any, res: Response) {
     try {
       const machines = await Machine.find({ dealership: req.user.id, isDeleted: { $ne: true } })
+        .select("-razorpayKeyId -razorpayKeySecret")
         .populate("assignedTo", "name email phoneNumber");
       res.json(machines);
     } catch (err: any) {
@@ -655,7 +669,8 @@ export class MachineController {
 
   static async getDealershipAvailableMachines(req: any, res: Response) {
     try {
-      const machines = await Machine.find({ dealership: req.user.id, assignedTo: null, isDeleted: { $ne: true } });
+      const machines = await Machine.find({ dealership: req.user.id, assignedTo: null, isDeleted: { $ne: true } })
+        .select("-razorpayKeyId -razorpayKeySecret");
       res.json(machines);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -669,7 +684,9 @@ export class MachineController {
   static async getCustomerMachines(req: any, res: Response) {
     try {
       const customerId = req.user.id;
-      const machines = await Machine.find({ assignedTo: customerId, isDeleted: { $ne: true } }).lean();
+      const machines = await Machine.find({ assignedTo: customerId, isDeleted: { $ne: true } })
+        .select("-razorpayKeyId -razorpayKeySecret")
+        .lean();
       
       const currentDate = new Date();
       const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
@@ -733,8 +750,12 @@ export class MachineController {
         ]);
         const totalRevenue = totalRevenueResult.length > 0 ? totalRevenueResult[0].total : 0;
 
+        const cleanMachine = { ...machine };
+        delete (cleanMachine as any).razorpayKeyId;
+        delete (cleanMachine as any).razorpayKeySecret;
+
         formatted.push({
-          ...machine,
+          ...cleanMachine,
           rentPerMonth: settings?.rentPerMonth || 0,
           maintenanceCostPerMonth: settings?.maintenanceCostPerMonth || 0,
           monthlyTaps,
@@ -875,7 +896,9 @@ export class MachineController {
       const { machineId } = req.params;
       const customerId = req.user.id;
 
-      const machine = await Machine.findOne({ machineId, assignedTo: customerId, isDeleted: { $ne: true } }).lean();
+      const machine = await Machine.findOne({ machineId, assignedTo: customerId, isDeleted: { $ne: true } })
+        .select("-razorpayKeyId -razorpayKeySecret")
+        .lean();
       if (!machine) return res.status(404).json({ success: false, message: "Machine not found" });
 
       const settings = await CustomerMachineSettings.findOne({ customerId, machineId: machine._id }).lean();
